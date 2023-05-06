@@ -8,16 +8,16 @@
 #SBATCH --mail-user=snbogan@ucsb.edu
 
 #Load trimmomatic
-module load trimmomatic/0.39
+module load trimmomatic
 
 #Set wd
-cd /Users/sambogan/Documents/GitHub/Cross_pHox/
+cd /home/snbogan/Cross_pHox/
 
-mkdir trimmed_fastqs
+mkdir /home/snbogan/Cross_pHox/trimmed_fastqs
 
-INPUT_DIR=/Users/sambogan/Documents/GitHub/Cross_pHox/raw_fastqs
-OUTPUT_DIR=/Users/sambogan/Documents/GitHub/Cross_pHox/trimmed_fastqs
-ADAPTERS=/Users/sambogan/Documents/GitHub/Cross_pHox/Custom_Illumina_Adapter.fa
+INPUT_DIR=/home/snbogan/Cross_pHox/raw_fastqs
+OUTPUT_DIR=/home/snbogan/Cross_pHox/trimmed_fastqs
+ADAPTERS=/home/snbogan/Cross_pHox/Custom_Illumina_Adapter.fa
 
 #Define input files
 FILES=($(ls -1 ${INPUT_DIR}/*.fastq.gz))
