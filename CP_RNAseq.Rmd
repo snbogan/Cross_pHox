@@ -18,10 +18,18 @@ library(Rmisc)
 library(mediation)
 library(ggforce)
 library(ggpubr)
+library(lme4)
+library(nadiv)
+library(brms)
+library(MASS)
+library(holodeck)
+library(bayestestR)
+library(rstanarm)
+library(bayesplot)
 
 ```
 
-Tests of differential expression
+#Tests of differential expression
 
 ```{r}
 
@@ -228,7 +236,7 @@ Fig2A <- ggplot(data = scores_df,
   scale_fill_viridis_d(guide = "none") +
   theme_classic(base_size = 15) +
   scale_size_continuous(range = c(0,1.5), guide = "none") +
-  scale_alpha_continuous(range = c(0,.5), guide = "none") +
+  scale_alpha_continuous(range = c(0.1,.5), guide = "none") +
   labs(x = "PC1, 21.26%", y = "PC2, 8.18%", color = "Treatment")
 
 Fig2A 
@@ -401,7 +409,7 @@ Fig2
 
 ```
 
-Tests of transcriptional plasticity's adaptiveness
+#Tests of transcriptional plasticity's adaptiveness
 
 ```{r}
 
@@ -800,10 +808,176 @@ ggplot(data = ind_dfm,
 
 ```
 
+#Animal models estimating heritability
+
+```{r}
+
+# Create experimental pedigree
+pedi <- read.csv("Pedigree/pedigree.csv")
+pedi_p <- prepPed(pedi)
+
+#  Read in metadata
+meta_df <- read.csv("Pedigree/pedigree_meta.csv")
+
+# Merge meta_df w/ CPM df
+extractAllButLastCharacter <- function(inputString) {
+  allButLast <- substring(inputString, 1, nchar(inputString) - 1)
+  return(allButLast)
+}
+
+tab_exp_df$ID <- extractAllButLastCharacter(as.vector(tab_exp_df$variable))
+
+tab_QG_df <- merge(tab_exp_df,
+                   meta_df,
+                   by = "ID")
+
+tab_QG_df$ID <- paste(tab_QG_df$Dam, 
+                      tab_QG_df$Sire, 
+                      "_", 
+                      tab_QG_df$Dev, 
+                      sep = "")
+
+tab_QG_df <- tab_QG_df %>% group_by(geneid) %>% mutate(CPM_sc = scale(log(CPM)))
+
+# With nadiv, create a relatedness matrix
+# Relatedness matrix is necessary for brms rather than inverse relatedness
+relat_m <- as.matrix(makeA(pedi_p))
+
+# Fit a test animal model with one gene
+f1 <- bf(CPM_sc ~ 1 + (1 | gr(ID, cov = relat_m)) + # Fits matrix w/ meth partitions for GE
+       Par + Dev + (1 | Dam) + (1 | Sire)) # Env. + dam/sire effects on GE
+
+brms_test <- brm(f1, 
+  data = filter(tab_QG_df, geneid == "gene-LOC100892942"),
+  data2 = list(relat_m = relat_m),
+  family = gaussian(),
+  chains = 4, cores = 2, iter = 40000
+)
+
+plot(brms_test)
+
+# Plot VA
+mcmc_areas(brms_test,
+           pars = c("sd_ID__Intercept"),
+           prob = 0.95) +
+  labs(x = expression(italic(V)["A"]), y = "Density")
+
+# Export VA then calculate and plot h2
+Var.table <- as_draws_df(brms_test)
+
+v_r <- (VarCorr(brms_test, summary = FALSE)$residual$sd)^2
+
+Var.table$h.bwt <- as.mcmc((Var.table$`sd_ID__Intercept`)^2 / 
+                               ((Var.table$`sd_ID__Intercept`)^2 + 
+                                  (Var.table$sd_Dam__Intercept)^2 + 
+                                  (Var.table$sd_Sire__Intercept)^2 +
+                                  (Var.table$sigma)^2))
+
+# Create df of h2 measures
+h2 <- as.data.frame(rbind(
+  cbind(summary(Var.table$h.bwt)$statistics[1], summary(Var.table$h.bwt)$quantiles[1], summary(Var.table$h.bwt)$quantiles[5])))
+
+print(h2)
+
+# Calculate evolvability
+
+```
+
+```
+
+
+#Junkyard
+
+Selection gradient estimation (test)
+
 ```{r}
 
 ## Fit selection gradient models
 # Estimate DE per sibship and add to df
+tab_exp_df$Sibship_geneid <- paste(gsub("_.*", "", tab_exp_df$variable),
+                                   tab_exp_df$geneid,
+                                   sep = "_")
+
+tab_DevN <- filter(tab_exp_df, Dev == "N")
+tab_DevU <- filter(tab_exp_df, Dev == "U")
+
+Sib_FC_df <- data.frame(Sibship_geneid = tab_DevN$Sibship_geneid,
+                       CPM_N = tab_DevN$CPM,
+                       CPM_U = tab_DevU$CPM)
+
+Sib_FC_df$Sib_FC <- log(Sib_FC_df$CPM_U/Sib_FC_df$CPM_N, 
+                        base = exp(2))
+
+tab_exp_df <- merge(tab_exp_df,
+                    data.frame(Sibship_geneid = Sib_FC_df$Sibship_geneid,
+                               Sib_FC = Sib_FC_df$Sib_FC),
+                    by = "Sibship_geneid")
+
+ab_lmm_df <- filter(tab_exp_df, geneid %in% tab_dev_filt$geneid)
+ab_lmm_df$Sibship <- gsub("_.*", "", ab_lmm_df$variable)
+
+# Fit selection gradient models
+ab_lms <- dlply(ab_lmm_df, c("geneid"), function(df) 
+lm(PercAb ~ Par + Dev + value + abs(Sib_FC), data = df))
+
+ab_lm_coefs <- list() 
+
+# Extract plasticity's fitness effects and p-values
+for (i in 1:length(ab_lms)) {
+ ab_lm_coefs[[i]] <- as.data.frame(ab_lms[[i]]$coefficients)[5,1]
+}
+names(ab_lm_coefs) <- names(ab_lms)
+
+ab_lm_pvals <- list() 
+
+# Report significant effects
+for (i in 1:length(ab_lms)) {
+ ab_lm_pvals[[i]] <- as.data.frame(anova(ab_lms[[i]]))[4,5]
+}
+names(ab_lm_pvals) <- names(ab_lms)
+
+ab_lm_coefs_df <- as.data.frame(unlist(bind_rows(ab_lm_coefs, 
+                                                 .id = "variable")))
+ab_lm_coefs_df$variable <- row.names(ab_lm_coefs_df)
+
+ab_lm_pvals_df <- as.data.frame(unlist(bind_rows(ab_lm_pvals, 
+                                                 .id = "variable")))
+ab_lm_pvals_df$variable <- row.names(ab_lm_pvals_df)
+
+ab_lm_df <- merge(ab_lm_coefs_df, ab_lm_pvals_df, by = "variable")
+
+ab_lm_df$FDR <- p.adjust(ab_lm_df$`unlist(bind_rows(ab_lm_pvals, .id = "variable"))`,
+                         method = "fdr")
+
+# How many significant fittnes effects? 9% of DEGs
+nrow(filter(ab_lm_df, FDR < 0.05))/nrow(ab_lm_df)
+
+## Plot absolute DE by fitness effect
+# Create plotting df
+selg_ab_pl_df <- merge(data.frame(geneid = row.names(dev_QLFT_cutoff_df),
+                                       logFC = dev_QLFT_cutoff_df$logFC),
+                       data.frame(geneid = ab_lm_df$variable,
+                                  Abnorm_eff = ab_lm_df$`unlist(bind_rows(ab_lm_coefs, .id = "variable"))`,
+                                  FDR = ab_lm_df$FDR),
+                       
+                       by = "geneid")
+
+selg_ab_pl_df$Dir <- ifelse(selg_ab_pl_df$Abnorm_eff < 0, "Adaptive", "Maladaptive")
+
+# Plot
+ggplot(data = filter(selg_ab_pl_df),
+       aes(y = abs(logFC), x = Abnorm_eff)) +
+  geom_point(aes(color = Dir), size = 0.25, alpha = 1) +
+  geom_smooth(method = "lm", formula = y ~ poly(x,2), 
+              alpha = 0.25, color = "black") +
+  theme_classic() +
+  scale_color_manual(values = c("royalblue1", "salmon1")) +
+  labs(title = "DE's maladaptive effects were stronger than adaptive effects",
+       subtitle = "All points represent DEGs",
+       y = "Absolute logFC",
+       x = "Fitness effect (abnormality)",
+       color = "Effect")
+
 
 ```
 
