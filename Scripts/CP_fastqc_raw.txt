@@ -24,3 +24,5 @@ export -f run_fastqc
 
 #Use GNU parallel to run FastQC on all files (2 at a time)
 ls *.fastq.gz | parallel -j 2 -N1 --delay 5 --joblog fastqc_parallel.log run_fastqc {}
+
+

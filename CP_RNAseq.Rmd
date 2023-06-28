@@ -1,0 +1,470 @@
+---
+title: "CP_RNAseq"
+output: html_document
+date: "2023-06-27"
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_knit$set(root.dir = '~/Documents/GitHub/Cross_pHox/comb_featureCounts.txt')
+
+library(edgeR)
+library(tidyverse)
+library(pheatmap)
+library(ape)
+library(vegan)
+library(reshape2)
+library(Rmisc)
+library(mediation)
+
+```
+
+Tests of differential expression
+
+```{r}
+
+# Read in and wrangle featureCounts output
+featureCounts_df <- read.table("comb_featureCounts.txt")
+colnames(featureCounts_df) <- featureCounts_df[1,]
+featureCounts_df <- featureCounts_df[-1, ] 
+
+# Make gene id matrix rowname
+row.names(featureCounts_df) <- featureCounts_df$Geneid
+
+# Remove unnecessary columns
+featureCounts_df <- subset(featureCounts_df,
+                           select = -c(Geneid))
+
+# Simplify column names
+colnames(featureCounts_df) <- gsub("_RNA_.*", "",
+                                   gsub("/home/snbogan/Cross_pHox/hisat2_alignments/to_count/",
+                                        "", colnames(featureCounts_df)))
+
+# Create parental treatment variable
+Par = as.vector(sapply(colnames(featureCounts_df), 
+                       function(col) substr(col, 1, 1)))
+
+# Create developmental treatment variable
+Dev = as.vector(gsub(".*_", "",
+                     gsub("[0-9]", "", 
+                          colnames(featureCounts_df))))
+
+# Create dam variable
+parts <- gsub("_.*", "", colnames(featureCounts_df))
+
+# Extract the first number
+first_number <- as.numeric(gsub("[^0-9]", "", parts))
+
+# Set Dam and Sire objects
+split_numbers <- function(numbers) {
+  first_digits <- vector("numeric", length(numbers))
+  second_digits <- vector("numeric", length(numbers))
+  
+  for (i in 1:length(numbers)) {
+    number <- as.character(numbers[i])
+    
+    if (nchar(number) %% 2 == 0) {
+      first_digits[i] <- as.numeric(substr(number, 1, nchar(number) / 2))
+      second_digits[i] <- as.numeric(substr(number, nchar(number) / 2 + 1, nchar(number)))
+    } else {
+      first_digits[i] <- as.numeric(substr(number, 1, (nchar(number) + 1) / 2 - 1))
+      second_digits[i] <- as.numeric(substr(number, (nchar(number) + 1) / 2, nchar(number)))
+    }
+  }
+  
+  return(list(first_digits = first_digits, second_digits = second_digits))
+}
+
+# Example usage
+split_result <- split_numbers(first_number)
+
+Dam = split_result$first_digits
+
+# Create sire variable
+Sire = split_result$second_digits
+
+# Create df of predictor variables
+targets_gc <- data.frame(Par = Par,
+                         Dev = Dev,
+                         Dam = Dam,
+                         Sire = Sire)
+
+targets_gc$grouping <- paste( targets_gc$Par, 
+                             targets_gc$Dev,
+                             sep="_" )
+
+# Round counts (if necessary) for use in edgeR
+data_input_gc <- sapply(featureCounts_df,as.numeric)
+
+row.names(data_input_gc) <- row.names(featureCounts_df)
+
+data_input_gc <- as.data.frame(round(data_input_gc))
+
+```
+
+```{r}
+
+# Make DGElist
+DGEList <- DGEList(counts = data_input_gc, 
+                   group = targets_gc$grouping, 
+                  remove.zeros = T)
+
+# Let's remove genes with less then 0.5 cpm (this is ~10 counts in the count file) in no fewer then 9 samples
+DGEList_keep <- rowSums(cpm(DGEList) > 0.5) >= 60
+
+# How many genes are removed by read count filter?
+table(DGEList_keep)
+
+# Filter and set keep.lib.sizes = F to have R recalculate library sizes after filtering
+DGEList <- DGEList[DGEList_keep, 
+                   keep.lib.sizes = FALSE]
+
+# Create library size normalization factors
+DGEList <- calcNormFactors(DGEList)
+
+
+# CPM conversion and log^2 transformation of read counts
+DGEList_log <- cpm(DGEList,
+                   log = TRUE, 
+                   prior.count = 2)
+
+# MDS of normalized gene read counts
+MDS <- plotMDS(DGEList_log)
+
+# Print MDS plot
+MDS
+
+# Run pcoa on gene read counts
+pcoa_gc <- pcoa(vegdist(t(DGEList_log <- cpm (DGEList, 
+                                              log = TRUE, 
+                                              prior.count = 2)),
+                        method = "euclidean") / 1000)
+
+# Print sample scores across vectors
+head(pcoa_gc$vectors)
+
+# Export DGEList_keep
+save(DGEList_keep,
+     file = "DGEList_keep.Rdata")
+
+```
+
+```{r}
+
+# Create model design that includes maternal and developmental effects and set intercept to 0
+design_multi_gc <- model.matrix(~0 + Par + Dev)
+
+# Filter and normalize count matrix input
+gene_counts_matrix <- as.matrix(data_input_gc)
+
+DGEList <- DGEList(counts = gene_counts_matrix, 
+                   group = targets_gc$grouping, 
+                   remove.zeros = T)
+
+DGEList <- DGEList[DGEList_keep, 
+                   keep.lib.sizes = FALSE]
+
+DGEList <- calcNormFactors(DGEList)
+
+# Estmate mean dispersal for use in plotting common dispersal against tagwise dispersal
+DGEList <- estimateGLMCommonDisp(DGEList, 
+                                 design_multi_gc)
+
+# Estmate robust, Bayesian dispersal per gene for estimating regression parameters for glmQL and differential expression
+DGEList <- estimateGLMRobustDisp(DGEList, 
+                                 design_multi_gc) 
+
+# Plot tagwise dispersal and impose w/mean dispersal and trendline
+plotBCV(DGEList) 
+
+# Fit a robust, multifactorial quasi-likelihood glm to normalized read counts
+fit_gc <- glmQLFit(DGEList, 
+                   design_multi_gc, 
+                   robust = TRUE)
+
+# Plot shrinkage of Bayesian quasi-likelihood dispersion to visualize stastical power of DE analysis
+plotQLDisp(fit_gc) # High shrinkage / high statistical power across DE tests
+
+```
+
+```{r}
+
+## Pairwise comparison of parental differential expression
+
+# Design contrast between samples based on maternal effect
+#colnames(design_multi_gc) <- c("ParN", "ParU", "DevU", ""ParU_DevU")
+
+con_Parent <- makeContrasts(con_Par_cons = ParU - ParN,
+                            levels = design_multi_gc)
+
+# Apply quasi-likelihood F test to incorporate Bayesian tagwise dispersion estimates as parameter for DEG analysis
+parental_QLFT <- glmQLFTest(fit_gc, 
+                            contrast = con_Parent)
+
+# Plot maternal logFC across logCPM (fdr < 0.05)
+plotMD(parental_QLFT)
+
+# How many significant DEGs? 2405
+summary(decideTestsDGE(parental_QLFT, 
+                       adjust.method = "fdr",
+                       p.value = 0.05))
+
+# Filter for significance and logFC cutoff (doubling of fold change or logFC of 1)
+parental_QLFT_cutoff <- topTags(parental_QLFT, 
+                                n = (1488 + 1539), 
+                                adjust.method = "fdr",
+                                p.value = 0.05)
+
+# Create df of logFC and sign cutoff DEGs
+parental_QLFT_cutoff_df <- data.frame(parental_QLFT_cutoff$table)
+parental_QLFT_fc_cutoff_df <- parental_QLFT_cutoff_df[!(abs( parental_QLFT_cutoff_df$logFC) < 1),]
+
+# Count total DEGs with logFC cutoff
+nrow(parental_QLFT_cutoff_df) # Without logFC cutoff = 279 DEGs
+nrow(parental_QLFT_fc_cutoff_df) # With logFC cutoff = 32 DEGs
+
+```
+
+```{r}
+
+## Pairwise comparison of developmental differential expression
+
+# Pairwise comparison of developmental differential expression
+con_Dev <- makeContrasts( con_Dev_cons = DevU, 
+                          levels = design_multi_gc)
+
+# Apply quasi-likelihood F test to incorporate Bayesian tagwise dispersion estimates as parameter for DEG analysis
+dev_QLFT <- glmQLFTest( fit_gc, 
+                   contrast = con_Dev )
+
+# Plot maternal logFC across logCPM (fdr < 0.05)
+plotMD( dev_QLFT )
+
+# How many significant DEGs? 4722
+summary( decideTestsDGE( dev_QLFT, 
+                         adjust.method = "fdr",
+                         p.value = 0.05 ) )
+
+# Filter for significance and logFC cutoff
+dev_QLFT_cutoff <- topTags(dev_QLFT, 
+                                n = (2271 + 2222), 
+                                adjust.method = "fdr",
+                                p.value = 0.05)
+
+# Create df of logFC and sig cutoff DEGs (doubling of fold change or logFC of 1)
+dev_QLFT_cutoff_df <- data.frame( dev_QLFT_cutoff$table )
+dev_QLFT_fc_cutoff_df <- dev_QLFT_cutoff_df[ !( abs( dev_QLFT_cutoff_df$logFC ) < 1 ), ]
+
+# Count total DEGs with logFC cutoff
+nrow(dev_QLFT_cutoff_df) # Without logFC cutoff = 4493 DEGs
+nrow(dev_QLFT_fc_cutoff_df) # With logFC cutoff = 227 DEGs
+
+```
+
+Tests of transcriptional plasticity's adaptiveness
+
+```{r}
+
+# Create cpm df for regression against survival/morph data
+logCPM_df <- as.data.frame(DGEList_log)
+
+# Create tabularized df containing all replicates using 'melt'
+logCPM_df$geneid <- row.names(logCPM_df)
+
+tab_exp_df <- melt(logCPM_df,
+                   id = c("geneid"))
+
+# Add covariate information
+# Create parental treatment variable
+tab_exp_df$Par <- as.vector(sapply(tab_exp_df$variable, 
+                       function(col) substr(col, 1, 1)))
+
+# Create developmental treatment variable
+tab_exp_df$Dev <- as.vector(gsub(".*_", "",
+                     gsub("[0-9]", "", 
+                          tab_exp_df$variable)))
+
+# Add abnormality data
+abnorm_df <- read.csv("Fitness_Data/Perc_Abnormality.csv")
+abnorm_df$variable <- gsub("\\.", "", abnorm_df$variable)
+
+tab_exp_df <- merge(tab_exp_df,
+                    abnorm_df,
+                    by = "variable")
+
+## Add morph data
+morph_parU <- read.table("Fitness_Data/data_parU.txt")
+morph_parN <- read.table("Fitness_Data/data_parN.txt")
+
+colnames(morph_parU) <- morph_parU[1,]
+morph_parU <- morph_parU[-1, ]
+
+colnames(morph_parN) <- morph_parN[1,]
+morph_parN <- morph_parN[-1, ]
+
+morph_df <- rbind(morph_parU, morph_parN)
+morph_df$Length.spi <- as.numeric(morph_df$Length.spi)
+morph_df$Length.bod <- as.numeric(morph_df$Length.bod)
+
+# Calc mean morph values
+spi_sum <- summarySE(measurevar = "Length.spi",
+                     groupvars = "cultureFac",
+                     data = morph_df)
+
+bod_sum <- summarySE(measurevar = "Length.bod",
+                     groupvars = "cultureFac",
+                     data = morph_df)
+
+morph_sum <- data.frame(variable = spi_sum$cultureFac,
+                        Length.spi = spi_sum$Length.spi,
+                        Length.bod = bod_sum$Length.bod)
+
+tab_morph_df <- merge(tab_exp_df,
+                    data.frame(variable = gsub("\\.", "", morph_sum$variable),
+                               Length_spi = morph_sum$Length.spi,
+                               Length_bod = morph_sum$Length.bod),
+                    by = "variable")
+
+# Reverse log^2 read count transformation
+tab_exp_df$CPM <- 2^tab_exp_df$value
+tab_morph_df$CPM <- 2^tab_morph_df$value
+```
+
+```{r}
+
+```
+
+```{r}
+
+# Filter df's for dev DEGs
+tab_dev_filt <- filter(tab_exp_df, geneid %in% row.names(dev_QLFT_cutoff_df))
+tab_m_dev_filt <- filter(tab_morph_df, geneid %in% row.names(dev_QLFT_cutoff_df))
+
+# Add sign of DE as variable (-1 or 1)
+tab_dev_filt <- merge(tab_dev_filt,
+                      data.frame(geneid = row.names(dev_QLFT_cutoff_df),
+                         sign = ifelse(dev_QLFT_cutoff_df$logFC >1, 1, -1)),
+                      by = "geneid")
+
+tab_m_dev_filt <- merge(tab_m_dev_filt,
+                      data.frame(geneid = row.names(dev_QLFT_cutoff_df),
+                         sign = ifelse(dev_QLFT_cutoff_df$logFC >1, 1, -1)),
+                      by = "geneid")
+
+# Scale CPM and transform it by units-toward-DE sign
+tab_dev_filt$scCPM <- scale(tab_dev_filt$CPM)
+tab_m_dev_filt$scCPM <- scale(tab_m_dev_filt$CPM)
+
+tab_dev_filt$dirCPM <- tab_dev_filt$scCPM * tab_dev_filt$sign
+
+tab_m_dev_filt$dirCPM <- tab_m_dev_filt$scCPM * tab_m_dev_filt$sign
+
+# Fit structural equation model: 
+# (i) dev -> (1-abnorm), GE and (ii)  dev -> (1-abnorm)
+
+# Fit abnorm SEM models - time = < 1 min
+lm1s <- dlply(tab_dev_filt, c("geneid"), function(df) 
+lm(dirCPM ~ Dev, data = df))
+
+lm2s <- dlply(tab_dev_filt, c("geneid"), function(df) 
+lm(PercAb ~ Dev + dirCPM, data = df))
+
+## If dev treat contains NA coefficient, remove from lm1 and lm2
+# First, convert lm's to coefficient df's
+lm1_coefs <- list() 
+
+for (i in 1:length(lm1s)) {
+ lm1_coefs[[i]] <- as.data.frame(lm1s[[i]]$effects)[2,1]
+}
+names(lm1_coefs) <- names(lm1s)
+
+lm2_coefs <- list() 
+
+for (i in 1:length(lm2s)) {
+ lm2_coefs[[i]] <- as.data.frame(lm2s[[i]]$effects)
+}
+names(lm2_coefs) <- names(lm2s)
+
+lm1_pvals <- list() 
+
+# Report significant DM exons
+
+for (i in 1:length(lm1s)) {
+ lm1_pvals[[i]] <- as.data.frame(anova(lm1s[[i]]))[1,5]
+}
+names(lm1_pvals) <- names(lm1s)
+
+# Perform mediation analysis testing for adaptive differential expression
+# e.g. DE results in greater fitness (less abnormality and high survival)
+
+# Mediation of dev abnorm effect by gene expression - time = 1.5 hrs
+dev_mediations <- list() # Create list to add vcov results to
+
+for (i in 1:length(lm1s)) {
+ tryCatch({dev_mediations[[i]] <- summary(mediate(lm1s[[i]], 
+                                                  lm2s[[i]], 
+                                                  sims = 1000, 
+                                                  treat = "Dev", 
+                                                  mediator = "dirCPM"))}, 
+          error=function(e){})
+}
+
+names(dev_mediations) <- names(lm1s)
+
+# Save and reload mediation
+save(dev_mediations, file = "dev_mediations.Rdata")
+```
+
+
+```{r}
+load("dev_mediations.Rdata")
+
+# Filter for sig mediation: partition by + and - effects
+# Extract p-values for indirect effects: E -> M -> GE
+ind_p_d <- list() 
+
+for (i in 1:length(dev_mediations)) {
+ ind_p_d[[i]] <- dev_mediations[[i]]$d0.p 
+}
+names(ind_p_d) <- names(dev_mediations)
+
+# Extract indirect effect confidence intervals
+ind_ci_d <- list() 
+
+for (i in 1:length(dev_mediations)) {
+ ind_ci_d[[i]] <- data.frame(t(as.data.frame(dev_mediations[[i]]$d0.ci)))
+}
+names(ind_ci_d) <- names(dev_mediations)
+
+ind_p_vd <- list() 
+
+# Create df with geneid and indirect effect pvals
+for (i in 1:length(ind_p_d)) {
+ new_value_d <- as.numeric(ind_p_d[[i]])
+ ind_p_vd <- c(ind_p_vd, new_value_d)
+}
+
+ind_ci_d_df <- bind_rows(ind_ci_d, .id = "column_label")
+
+ind_ci_vd <- list() 
+
+# Create df with geneid and indirect effect pvals
+ind_p_dfd <- as.data.frame(t(data.frame(ind_p_vd)))
+
+ind_p_dfd$fdr <- p.adjust(ind_p_dfd$V1, method = "fdr")
+
+nrow(filter(ind_p_dfd, fdr < 0.05)) # 1421 / 4493 (16% of DE has mediated fitness effect)
+
+# Filter to include only transcripts with significant mediation parameter estimate
+sig_dev_meth_dfd <- filter(ind_ci_d_df, X2.5. > 0 & X97.5. > 0 | X2.5. < 0 & X97.5. < 0) # 66 mat indirect genes
+nrow(sig_dev_meth_dfd)
+
+# 32% of DE has mediated fitness effect
+nrow(sig_dev_meth_dfd) / 4493
+
+# Separate mediated genes based on +/- fitness effects
+
+```
+
+Estimate fitness effects of DE via selection gradient
+

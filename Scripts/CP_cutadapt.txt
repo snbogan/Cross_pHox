@@ -1,0 +1,46 @@
+#!/bin/bash
+#SBATCH --job-name=cutadapt_RNA_trimmed
+#SBATCH --ntasks=1 #Number of tasks (processes) to be launched
+#SBATCH --cpus-per-task=16 #Number of CPUs per task
+#SBATCH --mem=64G # Memory allocation
+#SBATCH -t 24:00:00
+#SBATCH --mail-type=START,END,FAIL
+#SBATCH --mail-user=snbogan@ucsb.edu
+
+#Run cutadapt
+
+input_dir="/home/snbogan/Cross_pHox/trimmed_fastqs"
+output_dir="/home/snbogan/Cross_pHox/CutAdapt_fastqs"
+
+# Define universal Illumina adapter sequences
+adapter_r1="AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"
+adapter_r2="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+
+# Loop through input files in the directory
+for input_file in "$input_dir"/*_R1_001.fastq.gz_paired.fastq.gz; do
+    # Extract the base filename
+    filename=$(basename "$input_file")
+    # Construct the corresponding R2 filename
+    input_r2="${input_file/_R1/_R2}"
+    # Construct the output filenames
+    output_r1="$output_dir/${filename/R1_001.fastq.gz_paired.fastq.gz/_trimmed_R1.fastq}"
+    output_r2="$output_dir/${filename/R1_001.fastq.gz_paired.fastq.gz/_trimmed_R2.fastq}"
+
+    # Run Cutadapt to trim adapters
+    cutadapt -a $adapter_r1 -A $adapter_r2 -o $output_r1 -p $output_r2 $input_file $input_r2
+
+    # Print completion message
+    echo "Adapter trimming complete for $filename"
+done
+
+#Run fastQC
+#Set wd
+cd /home/snbogan/Cross_pHox/CutAdapt_fastqs
+  
+##Run fastqc 
+fastqc *.fastq -o fastQC_cutadapt/
+
+
+
+
+

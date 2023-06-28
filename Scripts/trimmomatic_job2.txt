@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=trimmomatic_RNA_seq_raw
+#SBATCH --job-name=trimmomatic_job2
 #SBATCH --ntasks=1 #Number of tasks (processes) to be launched
 #SBATCH --cpus-per-task=16 #Number of CPUs per task
 #SBATCH --mem=64G # Memory allocation
@@ -7,20 +7,15 @@
 #SBATCH --mail-type=START,END,FAIL
 #SBATCH --mail-user=snbogan@ucsb.edu
 
-#Load trimmomatic
-module load trimmomatic
-
 #Set wd
 cd /home/snbogan/Cross_pHox/
 
-mkdir /home/snbogan/Cross_pHox/trimmed_fastqs
-
-INPUT_DIR=/home/snbogan/Cross_pHox/raw_fastqs
+INPUT_DIR=/home/snbogan/Cross_pHox/CutAdapt_fastqs
 OUTPUT_DIR=/home/snbogan/Cross_pHox/trimmed_fastqs
-ADAPTERS=/home/snbogan/Cross_pHox/Custom_Illumina_Adapter.fa
+ADAPTERS=/home/snbogan/Cross_pHox/TruSeq-3.fa
 
 #Define input files
-FILES=($(ls -1 ${INPUT_DIR}/*.fastq.gz))
+FILES=($(ls -1 ${INPUT_DIR}/*_trimmed.fastq.gz))
 NUM_FILES=${#FILES[@]}
 NUM_JOBS=$(expr ${NUM_FILES} / 2)
 
@@ -35,5 +30,9 @@ parallel --jobs ${NUM_JOBS} \
 
 echo "Done."
 
-
-
+#Run fastQC
+#Set wd
+cd /home/snbogan/Cross_pHox/trimmed_fastqs
+  
+##Run fastqc 
+fastqc *.fastq.gz -o trimmed_fastQC
