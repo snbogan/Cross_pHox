@@ -16,6 +16,8 @@ library(vegan)
 library(reshape2)
 library(Rmisc)
 library(mediation)
+library(ggforce)
+library(ggpubr)
 
 ```
 
@@ -134,15 +136,106 @@ MDS <- plotMDS(DGEList_log)
 # Print MDS plot
 MDS
 
-# Run pcoa on gene read counts
-pcoa_gc <- pcoa(vegdist(t(DGEList_log <- cpm (DGEList, 
-                                              log = TRUE, 
-                                              prior.count = 2)),
-                        method = "euclidean") / 1000)
+```
 
-# Print sample scores across vectors
-head(pcoa_gc$vectors)
 
+```{r}
+
+#PCA
+# Export pcoa loadings
+dds.pcoa = pcoa(vegdist(t(DGEList_log),
+                          method = "euclidean") / 1000)
+
+# Create df of MDS vector loading
+scores <- dds.pcoa$vectors
+
+## Plot pcoa loadings of each sample, groouped by time point and pCO2 treatment
+
+# Calculate % variation explained by each eigenvector
+percent <- dds.pcoa$values$Eigenvalues
+cumulative_percent_variance <- (percent / sum( percent)) * 100
+
+# Prepare information for pcoa plot, then plot
+
+color <- c("#440154FF",
+         "#33638DFF",
+         "#3CBB75FF",
+         "#FDE725FF")
+         
+par(mfrow = c(1, 1))
+
+plot(
+  scores[, 1],
+  scores[, 2],
+  cex = .5,
+  cex.axis = 1,
+  cex.lab = 1.25,
+  xlab = paste("PC1, ", round(cumulative_percent_variance[1], 2), "%"),
+  ylab = paste("PC2, ", round(cumulative_percent_variance[2], 2), "%")
+  )
+
+# Add visual groupings to pcoa plot
+ordihull(
+  scores,
+  as.factor(targets_gc$grouping),
+  border = NULL,
+  lty = 2,
+  lwd = .5,
+  label = F,
+  col = color,
+  draw = "polygon",
+  alpha = 100,
+  cex = .5
+  )
+
+ordispider(scores, as.factor(targets_gc$grouping), 
+           label = T, col = color, ) # Vectors connecting samples in same pCO2 x time group
+
+N_N <- as.data.frame(scores)[targets_gc$grouping == "N_N", ][chull(as.data.frame(scores)[targets_gc$grouping == 
+    "N_N", c("Axis.1", "Axis.2")]), ]  # hull values for grp N_N
+
+N_U <- as.data.frame(scores)[targets_gc$grouping == "N_U", ][chull(as.data.frame(scores)[targets_gc$grouping == 
+    "N_U", c("Axis.1", "Axis.2")]), ]  # hull values for grp N_U
+
+U_N <- as.data.frame(scores)[targets_gc$grouping == "U_N", ][chull(as.data.frame(scores)[targets_gc$grouping == 
+    "U_N", c("Axis.1", "Axis.2")]), ]  # hull values for grp U_N
+
+U_U <- as.data.frame(scores)[targets_gc$grouping == "U_U", ][chull(as.data.frame(scores)[targets_gc$grouping == 
+    "U_U", c("Axis.1", "Axis.2")]), ]  # hull values for grp U_U
+
+N_N$Group <- "N_N"
+N_U$Group <- "N_U"
+U_N$Group <- "U_N"
+U_U$Group <- "U_U"
+
+hull.data <- rbind(N_N, N_U, U_N, U_U)  #combine groups
+hull.data
+
+scores_df <- as.data.frame(scores)
+scores_df$Sibship <- gsub("_.*", "", row.names(scores_df))
+scores_df$Par <- as.vector(sapply(scores_df$Sibship, 
+                       function(col) substr(col, 1, 1)))
+
+Fig2A <- ggplot(data = scores_df,
+                aes(x = Axis.1, y = Axis.2)) +
+  geom_polygon(data=hull.data, aes(x = Axis.1, y = Axis.2, fill = Group),
+               alpha=0.25) + # add the convex hulls
+  geom_bspline(aes(group = Sibship,
+                   alpha = stat(index), size = after_stat(index)), 
+               type = "clamped", color = "gray") +
+  geom_point(aes(color = targets_gc$grouping), size = 2, alpha = 1) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_d(guide = "none") +
+  theme_classic(base_size = 15) +
+  scale_size_continuous(range = c(0,1.5), guide = "none") +
+  scale_alpha_continuous(range = c(0,.5), guide = "none") +
+  labs(x = "PC1, 21.26%", y = "PC2, 8.18%", color = "Treatment")
+
+Fig2A 
+
+```
+
+```{r}
 # Export DGEList_keep
 save(DGEList_keep,
      file = "DGEList_keep.Rdata")
@@ -258,6 +351,53 @@ dev_QLFT_fc_cutoff_df <- dev_QLFT_cutoff_df[ !( abs( dev_QLFT_cutoff_df$logFC ) 
 # Count total DEGs with logFC cutoff
 nrow(dev_QLFT_cutoff_df) # Without logFC cutoff = 4493 DEGs
 nrow(dev_QLFT_fc_cutoff_df) # With logFC cutoff = 227 DEGs
+
+## Make Fig2B (MD plot)
+# Create plotting df
+dev_QLFT$table$Effect <- "Developmental"
+parental_QLFT$table$Effect <- "Transgenerational"
+
+dev_QLFT$table$FDR <- p.adjust(dev_QLFT$table$PValue, method = "fdr")
+parental_QLFT$table$FDR <- p.adjust(parental_QLFT$table$PValue, method = "fdr")
+
+QLFT <- rbind(dev_QLFT$table, parental_QLFT$table)
+QLFT$Dir <- ifelse(QLFT$logFC > 0 & QLFT$FDR < 0.05, "Up", 
+                             ifelse(QLFT$logFC < 0 & QLFT$FDR < 0.05,
+                                    "Down", "None"))
+
+QLFT$Effect = factor(
+  QLFT$Effect,
+  levels=c('Transgenerational','Developmental'))
+
+QLFT$Dir = factor(
+  QLFT$Dir,
+  levels=c('Down','Up', 'None'))
+
+Fig2B <- ggplot(data = QLFT,
+                aes(x = logCPM, y = logFC, size = Dir, color = Dir)) +
+  geom_point() +
+  scale_size_manual(values = c(1, 1, .1), guide = "none") +
+  scale_color_manual(values = c("blue", "red", "black"), guide = "none") +
+  facet_grid(Effect~.) +
+  theme_classic(base_rect_size = 0, base_size = 15)
+
+Fig2B
+
+# Compile Fig 2
+Fig2 <- ggarrange(Fig2A, Fig2B, 
+                   labels = c("A", "B"),
+                   heights = c(1, 1),
+                   widths = c(1, .5),
+                   ncol = 2, nrow = 1, align = "hv")
+
+Fig2
+
+# Export Fig 5 as png
+png("~/Documents/GitHub/Cross_pHox/Fig2.png", units = "in", width = 12, 
+    height = 7, 
+    res = 600)
+
+Fig2
 
 ```
 
@@ -438,6 +578,18 @@ names(ind_ci_d) <- names(dev_mediations)
 
 ind_p_vd <- list() 
 
+# Extract indirect effect estimates
+ind_est_d <- list() 
+
+for (i in 1:length(dev_mediations)) {
+ ind_est_d[[i]] <- data.frame(t(as.data.frame(dev_mediations[[i]]$d0)))
+}
+names(ind_est_d) <- names(dev_mediations)
+
+ind_est_d_df <- bind_rows(ind_est_d, .id = "column_label")
+
+ind_p_vd <- list()
+
 # Create df with geneid and indirect effect pvals
 for (i in 1:length(ind_p_d)) {
  new_value_d <- as.numeric(ind_p_d[[i]])
@@ -445,8 +597,6 @@ for (i in 1:length(ind_p_d)) {
 }
 
 ind_ci_d_df <- bind_rows(ind_ci_d, .id = "column_label")
-
-ind_ci_vd <- list() 
 
 # Create df with geneid and indirect effect pvals
 ind_p_dfd <- as.data.frame(t(data.frame(ind_p_vd)))
@@ -462,9 +612,198 @@ nrow(sig_dev_meth_dfd)
 # 32% of DE has mediated fitness effect
 nrow(sig_dev_meth_dfd) / 4493
 
-# Separate mediated genes based on +/- fitness effects
+## Separate mediated genes based on +/- fitness effects
+# What percent of fitness effects are adaptive? 33.15% or 471 genes
+nrow(filter(sig_dev_meth_dfd, X2.5. < 0)) /
+  nrow(sig_dev_meth_dfd)
+
+## Plot fitness effects of differential expression
+# Create plotting df
+ind_df <- data.frame(geneid = ind_ci_d_df$column_label,
+                     fit_eff = -1*ind_est_d_df$t.as.data.frame.dev_mediations..i...d0..,
+                     ci_2.5 = -1*ind_ci_d_df$X2.5.,
+                     ci_97.5 = -1*ind_ci_d_df$X2.5.)
+
+ind_df <- merge(ind_df,
+                data.frame(geneid = row.names(dev_QLFT_cutoff_df),
+                           logFC = dev_QLFT_cutoff_df$logFC,
+                           logCPM = dev_QLFT_cutoff_df$logCPM),
+                by = "geneid")
+
+ind_df$Dir <- ifelse(ind_df$fit_eff > 0, "Adaptive", "Maladaptive")
+
+ggplot(data = ind_df,
+       aes(y = abs(logFC), x = fit_eff)) +
+  geom_point(aes(color = Dir), size = 0.25, alpha = 1) +
+  geom_smooth(method = "lm", formula = y~poly(x,2), 
+              alpha = 0.25, color = "black") +
+  theme_classic() +
+  scale_color_manual(values = c("royalblue1", "salmon1")) +
+  labs(title = "DE's maladaptive effects were stronger than adaptive effects",
+       subtitle = "All points represent DEGs",
+       y = "Absolute logFC",
+       x = "Fitness effect. (abnormality)",
+       color = "Effect")
 
 ```
 
-Estimate fitness effects of DE via selection gradient
+```{r}
+# Fit abnorm SEM models - time = < 1 min
+lm3s <- dlply(na.omit(tab_m_dev_filt), c("geneid"), function(df) 
+lm(dirCPM ~ Dev, data = df))
+
+lm4s <- dlply(na.omit(tab_m_dev_filt), c("geneid"), function(df) 
+lm(Length_spi ~ Dev + dirCPM, data = df))
+
+## If dev treat contains NA coefficient, remove from lm1 and lm2
+# First, convert lm's to coefficient df's
+lm3_coefs <- list() 
+
+for (i in 1:length(lm1s)) {
+ lm3_coefs[[i]] <- as.data.frame(lm3s[[i]]$effects)[2,1]
+}
+names(lm3_coefs) <- names(lm3s)
+
+lm4_coefs <- list() 
+
+for (i in 1:length(lm4s)) {
+ lm4_coefs[[i]] <- as.data.frame(lm2s[[i]]$effects)
+}
+names(lm4_coefs) <- names(lm4s)
+
+lm3_pvals <- list() 
+
+# Report significant DM exons
+
+for (i in 1:length(lm3s)) {
+ lm3_pvals[[i]] <- as.data.frame(anova(lm3s[[i]]))[1,5]
+}
+names(lm3_pvals) <- names(lm3s)
+
+# Perform mediation analysis testing for adaptive differential expression
+# e.g. DE results in greater fitness (less abnormality and high survival)
+
+# Mediation of dev abnorm effect by gene expression - time = 1.5 hrs
+dev_morph_mediations <- list() # Create list to add vcov results to
+
+for (i in 1:length(lm3s)) {
+ tryCatch({dev_morph_mediations[[i]] <- summary(mediate(lm3s[[i]], 
+                                                  lm4s[[i]], 
+                                                  sims = 1000, 
+                                                  treat = "Dev", 
+                                                  mediator = "dirCPM"))}, 
+          error=function(e){})
+}
+
+names(dev_morph_mediations) <- names(lm3s)
+
+
+summary(lm3s[[1]])
+summary(lm4s[[1]])
+
+
+# Save and reload mediation
+save(dev_morph_mediations, file = "dev_morph_mediations.Rdata")
+
+```
+
+```{r}
+load("dev_morph_mediations.Rdata")
+
+# Filter for sig mediation: partition by + and - effects
+# Extract p-values for indirect effects: E -> M -> GE
+ind_p_dm <- list() 
+
+dev_morph_mediations[[1]]
+
+for (i in 1:length(dev_morph_mediations)) {
+ ind_p_dm[[i]] <- dev_morph_mediations[[i]]$d0.p 
+}
+names(ind_p_dm) <- names(dev_morph_mediations)
+
+# Extract indirect effect confidence intervals
+ind_ci_dm <- list() 
+
+for (i in 1:length(dev_morph_mediations)) {
+ ind_ci_dm[[i]] <- data.frame(t(as.data.frame(dev_morph_mediations[[i]]$d0.ci)))
+}
+names(ind_ci_dm) <- names(dev_morph_mediations)
+
+ind_p_vdm <- list() 
+
+# Extract indirect effect estimates
+ind_est_dm <- list() 
+
+for (i in 1:length(dev_morph_mediations)) {
+ ind_est_dm[[i]] <- data.frame(t(as.data.frame(dev_morph_mediations[[i]]$d0)))
+}
+names(ind_est_dm) <- names(dev_morph_mediations)
+
+ind_est_dm_df <- bind_rows(ind_est_dm, .id = "column_label")
+
+ind_p_vdm <- list()
+
+# Create df with geneid and indirect effect pvals
+for (i in 1:length(ind_p_dm)) {
+ new_value_dm <- as.numeric(ind_p_dm[[i]])
+ ind_p_vdm <- c(ind_p_vdm, new_value_dm)
+}
+
+ind_ci_dm_df <- bind_rows(ind_ci_dm, .id = "column_label")
+
+# Create df with geneid and indirect effect pvals
+ind_p_dfdm <- as.data.frame(t(data.frame(ind_p_vdm)))
+
+ind_p_dfdm$fdr <- p.adjust(ind_p_dfdm$V1, method = "fdr")
+
+nrow(filter(ind_p_dfdm, fdr < 0.05)) # 1421 / 4493 (16% of DE has mediated fitness effect)
+
+# Filter to include only transcripts with significant mediation parameter estimate
+sig_dev_meth_dfdm <- filter(ind_ci_dm_df, X2.5. > 0 & X97.5. > 0 | X2.5. < 0 & X97.5. < 0) # 66 mat indirect genes
+nrow(sig_dev_meth_dfdm)
+
+# 32% of DE has mediated fitness effect
+nrow(sig_dev_meth_dfdm) / 4493
+
+## Separate mediated genes based on +/- fitness effects
+# What percent of fitness effects are adaptive? 33.15% or 471 genes
+nrow(filter(sig_dev_meth_dfdm, X2.5. < 0)) /
+  nrow(sig_dev_meth_dfdm)
+
+## Plot fitness effects of differential expression
+# Create plotting df
+ind_dfm <- data.frame(geneid = ind_ci_dm_df$column_label,
+                     fit_eff = -1*ind_est_dm_df$t.as.data.frame.dev_morph_mediations..i...d0..,
+                     ci_2.5 = -1*ind_ci_dm_df$X2.5.,
+                     ci_97.5 = -1*ind_ci_dm_df$X2.5.)
+
+ind_dfm <- merge(ind_dfm,
+                data.frame(geneid = row.names(dev_QLFT_cutoff_df),
+                           logFC = dev_QLFT_cutoff_df$logFC,
+                           logCPM = dev_QLFT_cutoff_df$logCPM),
+                by = "geneid")
+
+ind_dfm$Dir <- ifelse(ind_dfm$fit_eff > 0, "Adaptive", "Maladaptive")
+
+ggplot(data = ind_dfm,
+       aes(y = abs(logFC), x = fit_eff)) +
+  geom_point(aes(color = Dir), size = 0.25, alpha = 1) +
+  geom_smooth(method = "lm", formula = y~poly(x,2), 
+              alpha = 0.25, color = "black") +
+  theme_classic() +
+  scale_color_manual(values = c("royalblue1", "salmon1")) +
+  labs(title = "DE's maladaptive effects were stronger than adaptive effects",
+       subtitle = "All points represent DEGs",
+       y = "Absolute logFC",
+       x = "Fitness effect (body size)",
+       color = "Effect")
+
+```
+
+```{r}
+
+## Fit selection gradient models
+# Estimate DE per sibship and add to df
+
+```
 
