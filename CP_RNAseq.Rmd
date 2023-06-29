@@ -6,10 +6,12 @@ date: "2023-06-27"
 
 ```{r setup, include=FALSE}
 
-knitr::opts_knit$set(root.dir = '~/Documents/GitHub/Cross_pHox/comb_featureCounts.txt')
+knitr::opts_knit$set(root.dir = '~/Documents/GitHub/Cross_pHox/')
 
 library(edgeR)
+library(DESeq2)
 library(tidyverse)
+library(arrayQualityMetrics)
 library(pheatmap)
 library(ape)
 library(vegan)
@@ -20,12 +22,10 @@ library(ggforce)
 library(ggpubr)
 library(lme4)
 library(nadiv)
+library(Matrix)
+library(lme4qtl)
 library(brms)
-library(MASS)
-library(holodeck)
-library(bayestestR)
-library(rstanarm)
-library(bayesplot)
+
 
 ```
 
@@ -49,6 +49,10 @@ featureCounts_df <- subset(featureCounts_df,
 colnames(featureCounts_df) <- gsub("_RNA_.*", "",
                                    gsub("/home/snbogan/Cross_pHox/hisat2_alignments/to_count/",
                                         "", colnames(featureCounts_df)))
+
+# Remove outliers
+featureCounts_df <- featureCounts_df[, !(colnames(featureCounts_df) %in% 
+                                           c("U33_U1", "U34_U1"))]
 
 # Create parental treatment variable
 Par = as.vector(sapply(colnames(featureCounts_df), 
@@ -146,7 +150,6 @@ MDS
 
 ```
 
-
 ```{r}
 
 #PCA
@@ -224,24 +227,51 @@ scores_df$Sibship <- gsub("_.*", "", row.names(scores_df))
 scores_df$Par <- as.vector(sapply(scores_df$Sibship, 
                        function(col) substr(col, 1, 1)))
 
-Fig2A <- ggplot(data = scores_df,
+Fig2A <- ggplot(data = scores_df, 
                 aes(x = Axis.1, y = Axis.2)) +
   geom_polygon(data=hull.data, aes(x = Axis.1, y = Axis.2, fill = Group),
-               alpha=0.25) + # add the convex hulls
-  geom_bspline(aes(group = Sibship,
+               alpha=0.2) + # add the convex hulls
+  geom_bspline(data = filter(scores_df, row.names(scores_df) != 
+                               c("U33_N1", "U34_N1")),
+               aes(group = Sibship,
                    alpha = stat(index), size = after_stat(index)), 
-               type = "clamped", color = "gray") +
+               type = "clamped", color = "gray30") +
   geom_point(aes(color = targets_gc$grouping), size = 2, alpha = 1) +
   scale_color_viridis_d() +
   scale_fill_viridis_d(guide = "none") +
   theme_classic(base_size = 15) +
-  scale_size_continuous(range = c(0,1.5), guide = "none") +
+  scale_size_continuous(range = c(0,1), guide = "none") +
   scale_alpha_continuous(range = c(0.1,.5), guide = "none") +
-  labs(x = "PC1, 21.26%", y = "PC2, 8.18%", color = "Treatment")
+  labs(x = "PC1, 14.48%", y = "PC2, 9.22%", color = "Treatment")
 
 Fig2A 
 
 ```
+
+#Outlier detection
+
+```{r}
+
+# Create DESeq2 object required for arrayqualitymetrics
+counts_df <- as.data.frame(gene_counts_matrix)
+
+dds <- DESeqDataSetFromMatrix(counts_df,
+                              colData = targets_gc,
+                              design = formula(~ 1 + Par + Dev))
+
+# Filter DESeq object
+dds_keep <- rowSums(cpm(dds) > 0.5) >= 60
+dds <- dds[dds_keep]
+
+# Outlier tests
+vsd <- varianceStabilizingTransformation(dds, blind=TRUE)
+
+e <- ExpressionSet(assay(vsd), AnnotatedDataFrame(as.data.frame(colData(vsd))))
+
+arrayQualityMetrics(e, intgroup=c("Par","Dev"), force=T)
+
+```
+
 
 ```{r}
 # Export DGEList_keep
@@ -294,7 +324,6 @@ plotQLDisp(fit_gc) # High shrinkage / high statistical power across DE tests
 
 # Design contrast between samples based on maternal effect
 #colnames(design_multi_gc) <- c("ParN", "ParU", "DevU", ""ParU_DevU")
-
 con_Parent <- makeContrasts(con_Par_cons = ParU - ParN,
                             levels = design_multi_gc)
 
@@ -312,7 +341,7 @@ summary(decideTestsDGE(parental_QLFT,
 
 # Filter for significance and logFC cutoff (doubling of fold change or logFC of 1)
 parental_QLFT_cutoff <- topTags(parental_QLFT, 
-                                n = (1488 + 1539), 
+                                n = (1539 + 1582), 
                                 adjust.method = "fdr",
                                 p.value = 0.05)
 
@@ -321,8 +350,8 @@ parental_QLFT_cutoff_df <- data.frame(parental_QLFT_cutoff$table)
 parental_QLFT_fc_cutoff_df <- parental_QLFT_cutoff_df[!(abs( parental_QLFT_cutoff_df$logFC) < 1),]
 
 # Count total DEGs with logFC cutoff
-nrow(parental_QLFT_cutoff_df) # Without logFC cutoff = 279 DEGs
-nrow(parental_QLFT_fc_cutoff_df) # With logFC cutoff = 32 DEGs
+nrow(parental_QLFT_cutoff_df) # Without logFC cutoff = 3027 DEGs
+nrow(parental_QLFT_fc_cutoff_df) # With logFC cutoff = 79 DEGs
 
 ```
 
@@ -348,7 +377,7 @@ summary( decideTestsDGE( dev_QLFT,
 
 # Filter for significance and logFC cutoff
 dev_QLFT_cutoff <- topTags(dev_QLFT, 
-                                n = (2271 + 2222), 
+                                n = (2205 + 2246), 
                                 adjust.method = "fdr",
                                 p.value = 0.05)
 
@@ -357,8 +386,8 @@ dev_QLFT_cutoff_df <- data.frame( dev_QLFT_cutoff$table )
 dev_QLFT_fc_cutoff_df <- dev_QLFT_cutoff_df[ !( abs( dev_QLFT_cutoff_df$logFC ) < 1 ), ]
 
 # Count total DEGs with logFC cutoff
-nrow(dev_QLFT_cutoff_df) # Without logFC cutoff = 4493 DEGs
-nrow(dev_QLFT_fc_cutoff_df) # With logFC cutoff = 227 DEGs
+nrow(dev_QLFT_cutoff_df) # Without logFC cutoff = 4451 DEGs
+nrow(dev_QLFT_fc_cutoff_df) # With logFC cutoff = 222 DEGs
 
 ## Make Fig2B (MD plot)
 # Create plotting df
@@ -476,10 +505,6 @@ tab_morph_df <- merge(tab_exp_df,
 # Reverse log^2 read count transformation
 tab_exp_df$CPM <- 2^tab_exp_df$value
 tab_morph_df$CPM <- 2^tab_morph_df$value
-```
-
-```{r}
-
 ```
 
 ```{r}
@@ -650,7 +675,7 @@ ggplot(data = ind_df,
   labs(title = "DE's maladaptive effects were stronger than adaptive effects",
        subtitle = "All points represent DEGs",
        y = "Absolute logFC",
-       x = "Fitness effect. (abnormality)",
+       x = "Fitness effect (abnormality)",
        color = "Effect")
 
 ```
@@ -667,7 +692,7 @@ lm(Length_spi ~ Dev + dirCPM, data = df))
 # First, convert lm's to coefficient df's
 lm3_coefs <- list() 
 
-for (i in 1:length(lm1s)) {
+for (i in 1:length(lm3s)) {
  lm3_coefs[[i]] <- as.data.frame(lm3s[[i]]$effects)[2,1]
 }
 names(lm3_coefs) <- names(lm3s)
@@ -675,7 +700,7 @@ names(lm3_coefs) <- names(lm3s)
 lm4_coefs <- list() 
 
 for (i in 1:length(lm4s)) {
- lm4_coefs[[i]] <- as.data.frame(lm2s[[i]]$effects)
+ lm4_coefs[[i]] <- as.data.frame(lm4s[[i]]$effects)
 }
 names(lm4_coefs) <- names(lm4s)
 
@@ -705,11 +730,6 @@ for (i in 1:length(lm3s)) {
 
 names(dev_morph_mediations) <- names(lm3s)
 
-
-summary(lm3s[[1]])
-summary(lm4s[[1]])
-
-
 # Save and reload mediation
 save(dev_morph_mediations, file = "dev_morph_mediations.Rdata")
 
@@ -721,8 +741,6 @@ load("dev_morph_mediations.Rdata")
 # Filter for sig mediation: partition by + and - effects
 # Extract p-values for indirect effects: E -> M -> GE
 ind_p_dm <- list() 
-
-dev_morph_mediations[[1]]
 
 for (i in 1:length(dev_morph_mediations)) {
  ind_p_dm[[i]] <- dev_morph_mediations[[i]]$d0.p 
@@ -774,16 +792,16 @@ nrow(sig_dev_meth_dfdm)
 nrow(sig_dev_meth_dfdm) / 4493
 
 ## Separate mediated genes based on +/- fitness effects
-# What percent of fitness effects are adaptive? 33.15% or 471 genes
-nrow(filter(sig_dev_meth_dfdm, X2.5. < 0)) /
+# What percent of fitness effects are adaptive? 36.11% or 511 genes
+nrow(filter(sig_dev_meth_dfdm, X2.5. > 0)) /
   nrow(sig_dev_meth_dfdm)
 
 ## Plot fitness effects of differential expression
 # Create plotting df
 ind_dfm <- data.frame(geneid = ind_ci_dm_df$column_label,
-                     fit_eff = -1*ind_est_dm_df$t.as.data.frame.dev_morph_mediations..i...d0..,
-                     ci_2.5 = -1*ind_ci_dm_df$X2.5.,
-                     ci_97.5 = -1*ind_ci_dm_df$X2.5.)
+                     fit_eff = ind_est_dm_df$t.as.data.frame.dev_morph_mediations..i...d0..,
+                     ci_2.5 = ind_ci_dm_df$X2.5.,
+                     ci_97.5 = ind_ci_dm_df$X2.5.)
 
 ind_dfm <- merge(ind_dfm,
                 data.frame(geneid = row.names(dev_QLFT_cutoff_df),
@@ -803,17 +821,167 @@ ggplot(data = ind_dfm,
   labs(title = "DE's maladaptive effects were stronger than adaptive effects",
        subtitle = "All points represent DEGs",
        y = "Absolute logFC",
+       x = "Fitness effect (spicule length)",
+       color = "Effect")
+
+```
+
+```{r}
+
+# Fit abnorm SEM models - time = < 1 min
+lm5s <- dlply(na.omit(tab_m_dev_filt), c("geneid"), function(df) 
+lm(dirCPM ~ Dev, data = df))
+
+lm6s <- dlply(na.omit(tab_m_dev_filt), c("geneid"), function(df) 
+lm(Length_bod ~ Dev + dirCPM, data = df))
+
+## If dev treat contains NA coefficient, remove from lm1 and lm2
+# First, convert lm's to coefficient df's
+lm5_coefs <- list() 
+
+for (i in 1:length(lm5s)) {
+ lm5_coefs[[i]] <- as.data.frame(lm5s[[i]]$effects)[2,1]
+}
+names(lm5_coefs) <- names(lm5s)
+
+lm6_coefs <- list() 
+
+for (i in 1:length(lm6s)) {
+ lm6_coefs[[i]] <- as.data.frame(lm6s[[i]]$effects)
+}
+names(lm6_coefs) <- names(lm6s)
+
+lm5_pvals <- list() 
+
+# Report significant DM exons
+
+for (i in 1:length(lm5s)) {
+ lm5_pvals[[i]] <- as.data.frame(anova(lm5s[[i]]))[1,5]
+}
+names(lm5_pvals) <- names(lm5s)
+
+# Perform mediation analysis testing for adaptive differential expression
+# e.g. DE results in greater fitness (less abnormality and high survival)
+
+# Mediation of dev abnorm effect by gene expression - time = 1.5 hrs
+dev_bod_mediations <- list() # Create list to add vcov results to
+
+for (i in 1:length(lm5s)) {
+ tryCatch({dev_bod_mediations[[i]] <- summary(mediate(lm5s[[i]], 
+                                                  lm6s[[i]], 
+                                                  sims = 1000, 
+                                                  treat = "Dev", 
+                                                  mediator = "dirCPM"))}, 
+          error=function(e){})
+}
+
+names(dev_bod_mediations) <- names(lm5s)
+
+# Save and reload mediation
+save(dev_bod_mediations, file = "dev_bod_mediations.Rdata")
+
+```
+
+```{r}
+
+load("dev_bod_mediations.Rdata")
+
+# Filter for sig mediation: partition by + and - effects
+# Extract p-values for indirect effects: E -> M -> GE
+ind_p_db <- list() 
+
+for (i in 1:length(dev_bod_mediations)) {
+ ind_p_db[[i]] <- dev_bod_mediations[[i]]$d0.p 
+}
+names(ind_p_db) <- names(dev_bod_mediations)
+
+# Extract indirect effect confidence intervals
+ind_ci_db <- list() 
+
+for (i in 1:length(dev_bod_mediations)) {
+ ind_ci_db[[i]] <- data.frame(t(as.data.frame(dev_bod_mediations[[i]]$d0.ci)))
+}
+names(ind_ci_db) <- names(dev_bod_mediations)
+
+ind_p_vdb <- list() 
+
+# Extract indirect effect estimates
+ind_est_db <- list() 
+
+for (i in 1:length(dev_bod_mediations)) {
+ ind_est_db[[i]] <- data.frame(t(as.data.frame(dev_bod_mediations[[i]]$d0)))
+}
+names(ind_est_db) <- names(dev_bod_mediations)
+
+ind_est_db_df <- bind_rows(ind_est_db, .id = "column_label")
+
+ind_p_vdb <- list()
+
+# Create df with geneid and indirect effect pvals
+for (i in 1:length(ind_p_db)) {
+ new_value_db <- as.numeric(ind_p_db[[i]])
+ ind_p_vdb <- c(ind_p_vdb, new_value_db)
+}
+
+ind_ci_db_df <- bind_rows(ind_ci_db, .id = "column_label")
+
+# Create df with geneid and indirect effect pvals
+ind_p_dfdb <- as.data.frame(t(data.frame(ind_p_vdb)))
+
+ind_p_dfdb$fdr <- p.adjust(ind_p_dfdb$V1, method = "fdr")
+
+nrow(filter(ind_p_dfdb, fdr < 0.05)) # 1421 / 4493 (16% of DE has mediated fitness effect)
+
+# Filter to include only transcripts with significant mediation parameter estimate
+sig_dev_meth_dfdb <- filter(ind_ci_db_df, X2.5. > 0 & X97.5. > 0 | X2.5. < 0 & X97.5. < 0) # 66 mat indirect genes
+nrow(sig_dev_meth_dfdb)
+
+# 32% of DE has mediated fitness effect
+nrow(sig_dev_meth_dfdb) / 4493
+
+## Separate mediated genes based on +/- fitness effects
+# What percent of fitness effects are adaptive? 36.11% or 511 genes
+nrow(filter(sig_dev_meth_dfdb, X2.5. > 0)) /
+  nrow(sig_dev_meth_dfdb)
+
+## Plot fitness effects of differential expression
+# Create plotting df
+ind_dfb <- data.frame(geneid = ind_ci_db_df$column_label,
+                     fit_eff = ind_est_db_df$t.as.data.frame.dev_bod_mediations..i...d0..,
+                     ci_2.5 = ind_ci_db_df$X2.5.,
+                     ci_97.5 = ind_ci_db_df$X2.5.)
+
+ind_dfb <- merge(ind_dfb,
+                data.frame(geneid = row.names(dev_QLFT_cutoff_df),
+                           logFC = dev_QLFT_cutoff_df$logFC,
+                           logCPM = dev_QLFT_cutoff_df$logCPM),
+                by = "geneid")
+
+ind_dfb$Dir <- ifelse(ind_dfb$fit_eff > 0, "Adaptive", "Maladaptive")
+
+ggplot(data = ind_dfb,
+       aes(y = abs(logFC), x = fit_eff)) +
+  geom_point(aes(color = Dir), size = 0.25, alpha = 1) +
+  geom_smooth(method = "lm", formula = y~poly(x,2), 
+              alpha = 0.25, color = "black") +
+  theme_classic() +
+  scale_color_manual(values = c("royalblue1", "salmon1")) +
+  labs(title = "DE's maladaptive effects were stronger than adaptive effects",
+       subtitle = "All points represent DEGs",
+       y = "Absolute logFC",
        x = "Fitness effect (body size)",
        color = "Effect")
 
 ```
+
+
 
 #Animal models estimating heritability
 
 ```{r}
 
 # Create experimental pedigree
-pedi <- read.csv("Pedigree/pedigree.csv")
+pedi <- read.csv("Pedigree/pedigree_trimmed.csv")
 pedi_p <- prepPed(pedi)
 
 #  Read in metadata
@@ -837,51 +1005,218 @@ tab_QG_df$ID <- paste(tab_QG_df$Dam,
                       tab_QG_df$Dev, 
                       sep = "")
 
-tab_QG_df <- tab_QG_df %>% group_by(geneid) %>% mutate(CPM_sc = scale(log(CPM)))
+tab_QG_df <- tab_QG_df %>% group_by(geneid) %>% mutate(CPM_sc = scale((CPM)))
 
 # With nadiv, create a relatedness matrix
 # Relatedness matrix is necessary for brms rather than inverse relatedness
 relat_m <- as.matrix(makeA(pedi_p))
 
-# Fit a test animal model with one gene
-f1 <- bf(CPM_sc ~ 1 + (1 | gr(ID, cov = relat_m)) + # Fits matrix w/ meth partitions for GE
-       Par + Dev + (1 | Dam) + (1 | Sire)) # Env. + dam/sire effects on GE
+# Fit animal model using lme4qtl
+lmer_test <- relmatLmer(CPM_sc ~ Par + Dev + (1|ID) + (1|Dam) + (1|Sire),
+                            data = filter(tab_QG_df, geneid == "rna-XM_030973936.1"),
+                            relmat = list(ID = relat_m))
 
-brms_test <- brm(f1, 
-  data = filter(tab_QG_df, geneid == "gene-LOC100892942"),
-  data2 = list(relat_m = relat_m),
-  family = gaussian(),
-  chains = 4, cores = 2, iter = 40000
-)
+# Print evolvability estimate
+VarProp(lmer_test)[1,6]
 
-plot(brms_test)
+# Turn this into a for loop and apply to all DE genes
+#  Next, estimat heritability of plasticity First, create df of plasticity per genotype - 1 min
+tab_QG_filt <- filter(tab_QG_df, geneid %in% row.names(dev_QLFT_cutoff_df))
 
-# Plot VA
-mcmc_areas(brms_test,
-           pars = c("sd_ID__Intercept"),
-           prob = 0.95) +
-  labs(x = expression(italic(V)["A"]), y = "Density")
+lme4qtls <- dlply(tab_QG_filt, c("geneid"), function(df) 
+relmatLmer(CPM_sc ~ Par + Dev + (1|ID) + (1|Dam) + (1|Sire),
+                            data = df,
+                            relmat = list(ID = relat_m)))
 
-# Export VA then calculate and plot h2
-Var.table <- as_draws_df(brms_test)
+# With for loop, export evolvability values for each gene
+evol_exp <- list()
 
-v_r <- (VarCorr(brms_test, summary = FALSE)$residual$sd)^2
+for (i in 1:length(lme4qtls)) {
+ evol_exp[[i]] <- VarProp(lme4qtls[[i]])[1,6] 
+}
 
-Var.table$h.bwt <- as.mcmc((Var.table$`sd_ID__Intercept`)^2 / 
-                               ((Var.table$`sd_ID__Intercept`)^2 + 
-                                  (Var.table$sd_Dam__Intercept)^2 + 
-                                  (Var.table$sd_Sire__Intercept)^2 +
-                                  (Var.table$sigma)^2))
+names(evol_exp) <- names(lme4qtls)
 
-# Create df of h2 measures
-h2 <- as.data.frame(rbind(
-  cbind(summary(Var.table$h.bwt)$statistics[1], summary(Var.table$h.bwt)$quantiles[1], summary(Var.table$h.bwt)$quantiles[5])))
+lme4qtl_exp_evol_df <- as.data.frame(
+  unlist(
+    bind_rows(evol_exp,
+              .id = "column_label")))
 
-print(h2)
+# Plot distribution of expression heritability for DE genes
+ggplot(data = lme4qtl_exp_evol_df,
+       aes(x = `unlist(bind_rows(evol_exp, .id = "column_label"))`)) +
+  geom_density(fill = "grey") +
+  labs(x = "Evolvability", title = "Evolvability of expression for DEGs")
 
-# Calculate evolvability
+## Fit animal models for plasticity of expression rather than expression
+# Estimate DE per sibship and add to df
+tab_QG_df$Sibship_geneid <- paste(gsub("_.*", "", tab_QG_df$ID),
+                                   tab_QG_df$geneid,
+                                   sep = "_")
+
+tab_DevN <- filter(tab_QG_df, Dev == "N")
+tab_DevU <- filter(tab_QG_df, Dev == "U")
+
+Sib_FC_df <- merge(
+  data.frame(Sibship_geneid = tab_DevN$Sibship_geneid,
+                       CPM_N = tab_DevN$CPM),
+  data.frame(Sibship_geneid = tab_DevU$Sibship_geneid,
+             CPM_U = tab_DevU$CPM),
+  by = "Sibship_geneid")
+
+Sib_FC_df$Sib_FC <- log(Sib_FC_df$CPM_U/Sib_FC_df$CPM_N, 
+                        base = exp(2))
+
+tab_pl_df <- merge(tab_QG_df,
+                    data.frame(Sibship_geneid = Sib_FC_df$Sibship_geneid,
+                               Sib_FC = Sib_FC_df$Sib_FC),
+                    by = "Sibship_geneid")
+
+tab_pl_filt <- filter(tab_pl_df, geneid %in% row.names(dev_QLFT_cutoff_df))
+tab_pl_filt <- tab_pl_filt %>% group_by(geneid) %>% mutate(Sib_FC_sc = scale(Sib_FC))
+
+pl_lme4s <- dlply(tab_pl_filt, c("geneid"), function(df) 
+relmatLmer(Sib_FC_sc ~ Par + (1|ID) + (1|Dam) + (1|Sire),
+                            data = df,
+                            relmat = list(ID = relat_m)))
+
+# With for loop, export plasticity evolvability values for each gene
+evol_pl <- list()
+
+for (i in 1:length(pl_lme4s)) {
+ evol_pl[[i]] <- VarProp(pl_lme4s[[i]])[1,6] 
+}
+
+names(evol_pl) <- names(pl_lme4s)
+
+lme4qtl_pl_evol_df <- as.data.frame(
+  unlist(
+    bind_rows(evol_pl,
+              .id = "column_label")))
+
+# Plot distribution of expression heritability for DE genes
+ggplot(data = lme4qtl_pl_evol_df,
+       aes(x = `unlist(bind_rows(evol_pl, .id = "column_label"))`)) +
+  geom_density(fill = "grey") +
+  labs(x = "Evolvability", title = "Evolvability of DE for DEGs")
+
+# Plot correlation of h2 for expression and DE with histogram on border
+lme4qtl_exp_evol_df$geneid <- row.names(lme4qtl_exp_evol_df)
+lme4qtl_pl_evol_df$geneid <- row.names(lme4qtl_pl_evol_df)
+
+pl_exp_corr <- ggplot(data = merge(lme4qtl_exp_evol_df,
+                    lme4qtl_pl_evol_df,
+                    by = "geneid"),
+                    aes(y = `unlist(bind_rows(evol_pl, .id = "column_label"))`,
+           x = `unlist(bind_rows(evol_exp, .id = "column_label"))`)) +
+  geom_point(size = 0.5) +
+  theme_classic() +
+  labs(x = "Expression IA", y = "DE IA")
 
 ```
+
+```{r}
+
+# Plot the scatter plot with marginal histograms
+ggMarginal(pl_exp_corr, type = "histogram", fill = "skyblue")
+
+## Plot and model associations between DE's heritability and fitness effect
+# Create df of pl h2 and abnorm fitness effect per gene
+plh2_v_abnorm <- merge(ind_df, lme4qtl_pl_evol_df, by = "geneid")
+
+ggplot(data = plh2_v_abnorm,
+       aes(x = fit_eff, 
+           y = `unlist(bind_rows(evol_pl, .id = "column_label"))`)) +
+  #geom_point(size = 0.5, color = "black") +
+  geom_smooth(method = "loess", alpha = 0.25) +
+  theme_classic(base_rect_size = 0) +
+  labs(x = "Fitness effect of DE (abnormality)", y = "DE IA")
+
+plh2_v_spi <- merge(ind_dfm, lme4qtl_pl_evol_df, by = "geneid")
+
+ggplot(data = plh2_v_spi,
+       aes(x = fit_eff, 
+           y = `unlist(bind_rows(evol_pl, .id = "column_label"))`)) +
+  #geom_point(size = 0.5, color = "black") +
+  geom_smooth(method = "loess", alpha = 0.25) +
+  theme_classic(base_rect_size = 0) +
+  labs(x = "Fitness effect of DE (spicule length)", y = "DE IA")
+
+plh2_v_bod <- merge(ind_dfb, lme4qtl_pl_evol_df, by = "geneid")
+
+ggplot(data = plh2_v_bod,
+       aes(x = fit_eff, 
+           y = `unlist(bind_rows(evol_pl, .id = "column_label"))`)) +
+  #geom_point(size = 0.5, color = "black") +
+  geom_smooth(method = "loess", alpha = 0.25) +
+  theme_classic(base_rect_size = 0) +
+  labs(x = "Fitness effect of DE (body size)", y = "DE IA")
+  
+## Remake plots but filter for significant fitness effects
+ggplot(data = filter(plh2_v_abnorm, geneid %in% sig_dev_meth_dfd$column_label),
+       aes(x = abs(fit_eff), 
+           y = `unlist(bind_rows(evol_pl, .id = "column_label"))`)) +
+  geom_point(size = 1, color = "black") +
+  geom_smooth(method = "loess", alpha = 0.25) +
+  theme_classic(base_rect_size = 0) +
+  facet_wrap(~Dir) +
+  labs(x = "Fitness effect of DE (abnormality)", y = "DE IA")
+
+ggplot(data = filter(plh2_v_spi, geneid %in% sig_dev_meth_dfdm$column_label),
+       aes(x = abs(fit_eff), 
+           y = `unlist(bind_rows(evol_pl, .id = "column_label"))`)) +
+  geom_point(size = 1, color = "black") +
+  geom_smooth(method = "lm", alpha = 0.25) +
+  theme_classic(base_rect_size = 0) +
+  facet_wrap(~Dir) +
+  labs(x = "Fitness effect of DE (spicule length)", y = "DE IA")
+
+ggplot(data = filter(plh2_v_bod, geneid %in% sig_dev_meth_dfdb$column_label),
+       aes(x = abs(fit_eff), 
+           y = `unlist(bind_rows(evol_pl, .id = "column_label"))`)) +
+  geom_point(size = 1, color = "black") +
+  geom_smooth(method = "lm", alpha = 0.25) +
+  theme_classic(base_rect_size = 0) +
+  labs(x = "Fitness effect of DE (body size)", y = "DE IA")
+
+# Density plots of evolvability
+ggplot(data = filter(plh2_v_abnorm, geneid %in% sig_dev_meth_dfd$column_label),
+       aes(y = `unlist(bind_rows(evol_pl, .id = "column_label"))`,
+           group = Dir, fill = Dir, x = Dir)) +
+  geom_boxplot() +
+  theme_classic() +
+  labs(y = expression("Differential Expression " ~ italic(I[A])),
+       x = "Abnormality effect")
+
+ggplot(data = filter(plh2_v_spi, geneid %in% sig_dev_meth_dfdm$column_label),
+       aes(y = `unlist(bind_rows(evol_pl, .id = "column_label"))`,
+           group = Dir, fill = Dir, x = Dir)) +
+  geom_boxplot() +
+  theme_classic() +
+  labs(y = expression("Differential Expression " ~ italic(I[A])),
+       x = "Spicule effect")
+
+ggplot(data = filter(plh2_v_bod, geneid %in% sig_dev_meth_dfdb$column_label),
+       aes(y = `unlist(bind_rows(evol_pl, .id = "column_label"))`,
+           group = Dir, fill = Dir, x = Dir)) +
+  geom_boxplot() +
+  theme_classic() +
+  labs(y = expression("Differential Expression " ~ italic(I[A])),
+       x = "Body size effect")
+  
+# Model significance of difference in IA between adaptive/maladaptive DE
+size_brm_df <- filter(plh2_v_bod, geneid %in% sig_dev_meth_dfdb$column_label)
+size_brm_df <- size_brm_df %>% 
+    rename_with(.cols = 8, ~ "IA")
+
+size_brm_df$IA_beta <- size_brm_df$IA + .000001
+
+size_brm <- brm(IA_beta ~ Dir,
+                data = size_brm_df,
+                family = Beta(link = "logit"),
+                chains = 4, cores = 1, iter = 40000)
+
+plot(size_brm)
 
 ```
 
@@ -893,25 +1228,6 @@ Selection gradient estimation (test)
 ```{r}
 
 ## Fit selection gradient models
-# Estimate DE per sibship and add to df
-tab_exp_df$Sibship_geneid <- paste(gsub("_.*", "", tab_exp_df$variable),
-                                   tab_exp_df$geneid,
-                                   sep = "_")
-
-tab_DevN <- filter(tab_exp_df, Dev == "N")
-tab_DevU <- filter(tab_exp_df, Dev == "U")
-
-Sib_FC_df <- data.frame(Sibship_geneid = tab_DevN$Sibship_geneid,
-                       CPM_N = tab_DevN$CPM,
-                       CPM_U = tab_DevU$CPM)
-
-Sib_FC_df$Sib_FC <- log(Sib_FC_df$CPM_U/Sib_FC_df$CPM_N, 
-                        base = exp(2))
-
-tab_exp_df <- merge(tab_exp_df,
-                    data.frame(Sibship_geneid = Sib_FC_df$Sibship_geneid,
-                               Sib_FC = Sib_FC_df$Sib_FC),
-                    by = "Sibship_geneid")
 
 ab_lmm_df <- filter(tab_exp_df, geneid %in% tab_dev_filt$geneid)
 ab_lmm_df$Sibship <- gsub("_.*", "", ab_lmm_df$variable)
