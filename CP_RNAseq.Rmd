@@ -25,6 +25,7 @@ library(nadiv)
 library(Matrix)
 library(lme4qtl)
 library(brms)
+library(ggExtra)
 
 
 ```
@@ -220,26 +221,32 @@ U_N$Group <- "U_N"
 U_U$Group <- "U_U"
 
 hull.data <- rbind(N_N, N_U, U_N, U_U)  #combine groups
-hull.data
+hull.data$Par <- gsub("_.*", "", hull.data$Group)
 
 scores_df <- as.data.frame(scores)
 scores_df$Sibship <- gsub("_.*", "", row.names(scores_df))
 scores_df$Par <- as.vector(sapply(scores_df$Sibship, 
                        function(col) substr(col, 1, 1)))
 
+scores_df$Par <- as.vector(sapply(row.names(scores_df), 
+                       function(col) substr(col, 1, 1)))
+
 Fig2A <- ggplot(data = scores_df, 
                 aes(x = Axis.1, y = Axis.2)) +
   geom_polygon(data=hull.data, aes(x = Axis.1, y = Axis.2, fill = Group),
-               alpha=0.2) + # add the convex hulls
+               alpha=0.33) + # add the convex hulls
   geom_bspline(data = filter(scores_df, row.names(scores_df) != 
                                c("U33_N1", "U34_N1")),
                aes(group = Sibship,
                    alpha = stat(index), size = after_stat(index)), 
-               type = "clamped", color = "gray30") +
-  geom_point(aes(color = targets_gc$grouping), size = 2, alpha = 1) +
+               type = "clamped", color = "black") +
+  geom_point(aes(color = targets_gc$grouping,
+                 shape = targets_gc$grouping), size = 2, alpha = 1) +
   scale_color_viridis_d() +
   scale_fill_viridis_d(guide = "none") +
-  theme_classic(base_size = 15) +
+  theme_classic(base_size = 15, base_rect_size = 0) +
+  facet_wrap(~Par) +
+  scale_shape_manual(values = c(NA,16,NA,16), guide = "none") +
   scale_size_continuous(range = c(0,1), guide = "none") +
   scale_alpha_continuous(range = c(0.1,.5), guide = "none") +
   labs(x = "PC1, 14.48%", y = "PC2, 9.22%", color = "Treatment")
@@ -974,8 +981,6 @@ ggplot(data = ind_dfb,
 
 ```
 
-
-
 #Animal models estimating heritability
 
 ```{r}
@@ -1111,14 +1116,16 @@ pl_exp_corr <- ggplot(data = merge(lme4qtl_exp_evol_df,
            x = `unlist(bind_rows(evol_exp, .id = "column_label"))`)) +
   geom_point(size = 0.5) +
   theme_classic() +
-  labs(x = "Expression IA", y = "DE IA")
+  labs(x = expression("Expression " ~ italic(I[A])),
+       y = expression("DE " ~ italic(I[A])))
 
 ```
 
 ```{r}
 
 # Plot the scatter plot with marginal histograms
-ggMarginal(pl_exp_corr, type = "histogram", fill = "skyblue")
+pl_exp_corr <- ggMarginal(pl_exp_corr, type = "histogram", fill = "skyblue")
+pl_exp_corr
 
 ## Plot and model associations between DE's heritability and fitness effect
 # Create df of pl h2 and abnorm fitness effect per gene
@@ -1220,6 +1227,30 @@ plot(size_brm)
 
 ```
 
+#Multivariate animal model for measuring correlation between genes' DE
+
+```{r}
+
+# Create df with column of CPMs for each gene
+test_df <- tab_pl_filt %>%
+  pivot_wider(id_cols = c(ID, Par, Dev, Sire, Dam), 
+              names_from = geneid, 
+              values_from = Sib_FC)
+
+lmer_mv <- relmatLmer(Sib_FC ~ Par + (0 + geneid|ID) + (1|Dam) + (1|Sire),
+                      data = filter(tab_pl_filt,
+                                    geneid == c("gene-LOC100893164",
+                                                "gene-LOC105442818",
+                                                "gene-LOC115918257",
+                                                "gene-LOC115920372",
+                                                "gene-LOC115918620",
+                                                "gene-LOC115921788")),
+                      relmat = list(ID = relat_m))
+
+# Print evolvability estimate
+VarCorr(lmer_mv)
+
+```
 
 #Junkyard
 
