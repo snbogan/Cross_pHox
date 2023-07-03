@@ -26,7 +26,7 @@ library(Matrix)
 library(lme4qtl)
 library(brms)
 library(ggExtra)
-
+library(GenomicRanges)
 
 ```
 
@@ -244,7 +244,7 @@ Fig2A <- ggplot(data = scores_df,
                  shape = targets_gc$grouping), size = 2, alpha = 1) +
   scale_color_viridis_d() +
   scale_fill_viridis_d(guide = "none") +
-  theme_classic(base_size = 15, base_rect_size = 0) +
+  theme_classic(base_size = 20, base_rect_size = 0) +
   facet_wrap(~Par) +
   scale_shape_manual(values = c(NA,16,NA,16), guide = "none") +
   scale_size_continuous(range = c(0,1), guide = "none") +
@@ -423,7 +423,7 @@ Fig2B <- ggplot(data = QLFT,
   scale_size_manual(values = c(1, 1, .1), guide = "none") +
   scale_color_manual(values = c("blue", "red", "black"), guide = "none") +
   facet_grid(Effect~.) +
-  theme_classic(base_rect_size = 0, base_size = 15)
+  theme_classic(base_rect_size = 0, base_size = 20)
 
 Fig2B
 
@@ -972,7 +972,7 @@ ggplot(data = ind_dfb,
   geom_smooth(method = "lm", formula = y~poly(x,2), 
               alpha = 0.25, color = "black") +
   theme_classic() +
-  scale_color_manual(values = c("royalblue1", "salmon1")) +
+  scale_color_manual(values = c("salmon1", "royalblue")) +
   labs(title = "DE's maladaptive effects were stronger than adaptive effects",
        subtitle = "All points represent DEGs",
        y = "Absolute logFC",
@@ -1203,13 +1203,16 @@ ggplot(data = filter(plh2_v_spi, geneid %in% sig_dev_meth_dfdm$column_label),
   labs(y = expression("Differential Expression " ~ italic(I[A])),
        x = "Spicule effect")
 
-ggplot(data = filter(plh2_v_bod, geneid %in% sig_dev_meth_dfdb$column_label),
+Fig5A<- ggplot(data = filter(plh2_v_bod, geneid %in% sig_dev_meth_dfdb$column_label),
        aes(y = `unlist(bind_rows(evol_pl, .id = "column_label"))`,
            group = Dir, fill = Dir, x = Dir)) +
   geom_boxplot() +
   theme_classic() +
+  scale_fill_manual(values = c("salmon1", "royalblue"), guide = "none") +
   labs(y = expression("Differential Expression " ~ italic(I[A])),
        x = "Body size effect")
+
+Fig5A
   
 # Model significance of difference in IA between adaptive/maladaptive DE
 size_brm_df <- filter(plh2_v_bod, geneid %in% sig_dev_meth_dfdb$column_label)
@@ -1223,7 +1226,41 @@ size_brm <- brm(IA_beta ~ Dir,
                 family = Beta(link = "logit"),
                 chains = 4, cores = 1, iter = 40000)
 
+size_cont_brm <- brm(IA_beta ~ Dir:scale(abs(fit_eff)),
+                data = size_brm_df,
+                family = Beta(link = "logit"),
+                chains = 4, cores = 1, iter = 40000)
+
+posterior_summary(size_cont_brm)
+
 plot(size_brm)
+
+# Assemble Fig5
+h2_eff_df <- data.frame(Dir = c("Adaptive", "Maladaptive"),
+                        h2_eff = c(-274.525055,14.690865),
+                        h2_eff_2.5 = c(-480.410936, -92.105131),
+                        h2_eff_97.5 = c(-71.708541, 117.610374))
+
+Fig5B <- ggplot(data = h2_eff_df,
+                aes(y = h2_eff, x = Dir, color = Dir)) +
+  geom_hline(yintercept = 0, lty = 2, color = "gray") +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = h2_eff_2.5, ymax = h2_eff_97.5),
+                width = 0, size = .75) +
+  theme_classic() +
+  scale_color_manual(values = c("salmon1", "royalblue"), guide = "none") +
+  labs(y = expression("DE " ~ italic(I[A]) ~ "/ absolute body size effect"),
+       x = "Body size effect")
+
+Fig5B
+
+Fig5 <- ggarrange(Fig5A, Fig5B, 
+                   labels = c("A", "B"),
+                   heights = c(1, 1),
+                   widths = c(1, 1),
+                   ncol = 2, nrow = 1, align = "hv")
+
+Fig5
 
 ```
 
@@ -1252,9 +1289,77 @@ VarCorr(lmer_mv)
 
 ```
 
-#Junkyard
+#Functional enrichment analyses
 
-Selection gradient estimation (test)
+```{r}
+
+# Read in genomic ranges object of Spur5.0 gene GO terms
+BP <- readRDS("GO_annotation/bp_spurpuratus_eg_gene_go_genesets.rds")
+CC <- readRDS("GO_annotation/cc_spurpuratus_eg_gene_go_genesets.rds")
+MF <- readRDS("GO_annotation/mf_spurpuratus_eg_gene_go_genesets.rds")
+
+## Create df containing cols for geneid, BP, CC, and MF
+# Combine GO lists and export genes
+all_GOs <- c(BP, CC, MF)
+unique_genes <- unique(unlist(all_GOs))
+
+# Create an empty data frame with columns for each grouping variable
+GOannot_df <- data.frame(Gene = unique_genes, BP = "", CC = "", MF = "", stringsAsFactors = FALSE)
+
+# Iterate over the grouping variables and populate the data frame
+for (group_var in names(BP)) {
+  # Get the vector of gene names for the current grouping variable
+  gene_vector <- BP[[group_var]]
+  
+  # Set the grouping variable for genes that belong to it
+  GOannot_df$BP[GOannot_df$Gene %in% gene_vector] <- paste(GOannot_df$BP[GOannot_df$Gene %in% gene_vector], group_var, sep = ", ")
+}
+
+for (group_var in names(CC)) {
+  gene_vector <- CC[[group_var]]
+  GOannot_df$CC[GOannot_df$Gene %in% gene_vector] <- paste(GOannot_df$CC[GOannot_df$Gene %in% gene_vector], group_var, sep = ", ")
+}
+
+for (group_var in names(MF)) {
+  gene_vector <- MF[[group_var]]
+  GOannot_df$MF[GOannot_df$Gene %in% gene_vector] <- paste(GOannot_df$MF[GOannot_df$Gene %in% gene_vector], group_var, sep = ", ")
+}
+
+# Remove leading and trailing commas
+GOannot_df$BP <- gsub("^, |, $", "", GOannot_df$BP)
+GOannot_df$CC <- gsub("^, |, $", "", GOannot_df$CC)
+GOannot_df$MF <- gsub("^, |, $", "", GOannot_df$MF)
+
+# Show resulting df
+head(GOannot_df)
+
+## Merge geneID w/ transcriptIDs for use w/ RNAseq dfs
+# Read in Spur_5.0 gff3
+Spur5.0_gff <- read.gff(
+  "Genome_Resources/GCF_000002235.5_Spur_5.0_genomic.gff"
+  )
+
+Spur5.0_gff_tr <- filter(Spur5.0_gff, type == "mRNA")
+
+# Create df of transcript ID and geneID
+gene_name_index <- data.frame(
+  Gene = gsub(";.*", "",
+              gsub(".*Parent=", "", Spur5.0_gff_tr$attributes)),
+  Transcript = gsub(";.*", "",
+              gsub("ID=", "", Spur5.0_gff_tr$attributes))
+)
+
+gene_name_index$Gene <- gsub("gene-", "", gene_name_index$Gene)
+
+# How many gene names are in the GO term df? Most of them! Good start
+nrow(filter(gene_name_index, Gene %in% GOannot_df$Gene))
+
+```
+
+
+#Boneyard
+
+Selection gradient model rather than structural eq. model for performance effect
 
 ```{r}
 
