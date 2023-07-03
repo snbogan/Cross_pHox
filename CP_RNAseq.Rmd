@@ -1291,6 +1291,8 @@ VarCorr(lmer_mv)
 
 #Functional enrichment analyses
 
+First, wrangle GO annotation data for tests
+
 ```{r}
 
 # Read in genomic ranges object of Spur5.0 gene GO terms
@@ -1353,6 +1355,54 @@ gene_name_index$Gene <- gsub("gene-", "", gene_name_index$Gene)
 
 # How many gene names are in the GO term df? Most of them! Good start
 nrow(filter(gene_name_index, Gene %in% GOannot_df$Gene))
+
+# Format GOannot_df for GOMWU + Fisher's exact tests
+GOannot_df <- merge(GOannot_df,
+                    gene_name_index,
+                    by = "Gene")
+
+goAnnot_spur5.0 <- data.frame(
+  ID = GOannot_df$Transcript,
+  GO = paste(gsub(",", ";", GOannot_df$BP),
+             gsub(",", ";", GOannot_df$CC),
+             gsub(",", ";", GOannot_df$MF),
+             sep = ";"))
+
+# Clean up GO term list
+goAnnot_spur5.0$GO <- gsub(";;", ";", goAnnot_spur5.0$GO)
+
+remove_1st_semi <- function(text_vector) {
+  modified_text_vector <- vector(length = length(text_vector))
+  
+  for (i in 1:length(text_vector)) {
+    if (substr(text_vector[i], 1, 1) == ";") {
+      modified_text_vector[i] <- substr(text_vector[i], 2, nchar(text_vector[i]))
+    } else {
+      modified_text_vector[i] <- text_vector[i]
+    }
+  }
+  
+  return(modified_text_vector)
+}
+
+# Apply function to remove first semicolons from GO term list
+goAnnot_spur5.0$GO <- remove_1st_semi(goAnnot_spur5.0$GO)
+
+# Export to GOMWU directory
+write.table(goAnnot_spur5.0, 
+            "GO_MWU-master/goAnnot_spur5.0.tab",
+            quote = FALSE,
+            sep = '\t',
+            col.names = FALSE,
+            row.names = FALSE)
+
+```
+
+Next, perform analyses
+
+```{r}
+
+
 
 ```
 
