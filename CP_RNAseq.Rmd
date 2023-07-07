@@ -25,8 +25,10 @@ library(nadiv)
 library(Matrix)
 library(lme4qtl)
 library(brms)
+library(bayestestR)
 library(ggExtra)
 library(GenomicRanges)
+library(lmtest)
 
 ```
 
@@ -367,12 +369,12 @@ nrow(parental_QLFT_fc_cutoff_df) # With logFC cutoff = 79 DEGs
 ## Pairwise comparison of developmental differential expression
 
 # Pairwise comparison of developmental differential expression
-con_Dev <- makeContrasts( con_Dev_cons = DevU, 
-                          levels = design_multi_gc)
+con_Dev <- makeContrasts(con_Dev_cons = DevU, 
+                         levels = design_multi_gc)
 
 # Apply quasi-likelihood F test to incorporate Bayesian tagwise dispersion estimates as parameter for DEG analysis
-dev_QLFT <- glmQLFTest( fit_gc, 
-                   contrast = con_Dev )
+dev_QLFT <- glmQLFTest(fit_gc,
+                       contrast = con_Dev)
 
 # Plot maternal logFC across logCPM (fdr < 0.05)
 plotMD( dev_QLFT )
@@ -514,6 +516,221 @@ tab_exp_df$CPM <- 2^tab_exp_df$value
 tab_morph_df$CPM <- 2^tab_morph_df$value
 ```
 
+Estimate adaptiveness of plasticity in body size, spicule length
+
+```{r}
+
+# Wrangle phenotype data for selection gradient estimation
+colnames(abnorm_df) <- c("cultureFac", "percAb")
+morph_df$cultureFac <- gsub("\\.", "", morph_df$cultureFac)
+morph_df$Spi_norm <- morph_df$Length.spi / morph_df$Length.bod
+
+# Calculate mean spicule length and body length
+remove_last_digit <- function(strings) {
+  if (is.character(strings)) {
+    without_last_digit <- substr(strings, 1, nchar(strings) - 1)
+    return(without_last_digit)
+  } else {
+    stop("Input must be a character vector.")
+  }
+}
+
+morph_df$cultureFac2 <- remove_last_digit(morph_df$cultureFac)
+abnorm_df$cultureFac2 <- remove_last_digit(abnorm_df$cultureFac)
+
+spi_sum <- summarySE(measurevar = "Spi_norm",
+                     groupvars = c("treat_dev", "cultureFac", "cultureFac2", "Dam", "Sire"),
+                     data = morph_df)
+
+bod_sum <- summarySE(measurevar = "Length.bod",
+                     groupvars = c("treat_dev", "cultureFac", "cultureFac2", "Dam", "Sire"),
+                     data = morph_df)
+
+# Merge abnorm data with summed performance df's
+sel_grad_spi <- merge(spi_sum, abnorm_df, by = "cultureFac")
+sel_grad_bod <- merge(bod_sum, abnorm_df, by = "cultureFac")
+
+### Spicule length
+
+# Create plasticity variables and merge into summed df's
+sel_grad_spi_N <- dplyr::filter(sel_grad_spi, treat_dev == "N")
+sel_grad_spi_U <- filter(sel_grad_spi, treat_dev == "U")
+
+spi_pl <- unique(merge(
+  data.frame(Sibship = gsub("_.*", "", sel_grad_spi_N$cultureFac2.x),
+             N_spi = sel_grad_spi_N$Spi_norm),
+  data.frame(Sibship = gsub("_.*", "", sel_grad_spi_U$cultureFac2.x),
+             U_spi = sel_grad_spi_U$Spi_norm),
+  by = "Sibship"))
+
+spi_pl$Spi_pl <- spi_pl$U_spi - spi_pl$N_spi
+sel_grad_spi$Sibship <- gsub("_.*", "", sel_grad_spi$cultureFac)
+sel_grad_spi <- merge(sel_grad_spi, spi_pl, by = "Sibship")
+
+# Create parental environment variable for sel grad models
+sel_grad_spi$treat_par <- gsub("^(.).*", "\\1", sel_grad_spi$cultureFac)
+
+### Body size
+
+# Create plasticity variables and merge into summed df's
+sel_grad_bod_N <- filter(sel_grad_bod, treat_dev == "N")
+sel_grad_bod_U <- filter(sel_grad_bod, treat_dev == "U")
+
+bod_pl <- unique(merge(
+  data.frame(Sibship = gsub("_.*", "", sel_grad_bod_N$cultureFac2.x),
+             N_bod = sel_grad_bod_N$Length.bod),
+  data.frame(Sibship = gsub("_.*", "", sel_grad_bod_U$cultureFac2.x),
+             U_bod = sel_grad_bod_U$Length.bod),
+  by = "Sibship"))
+
+bod_pl$Bod_pl <- bod_pl$U_bod - bod_pl$N_bod
+
+sel_grad_bod$Sibship <- gsub("_.*", "", sel_grad_bod$cultureFac)
+sel_grad_bod <- merge(sel_grad_bod, bod_pl, by = "Sibship")
+
+# Create parental environment variable for sel grad models
+sel_grad_bod$treat_par <- gsub("^(.).*", "\\1", sel_grad_bod$cultureFac)
+
+# Fit beta distribution brm to accommodate dist of outcome variable
+pedi <- read.csv("Pedigree/pedigree_sel.csv")
+pedi_p <- prepPed(pedi)
+
+relat_m <- as.matrix(makeA(pedi_p))
+
+sel_grad_spi$ID <- sel_grad_spi$cultureFac2.x
+sel_grad_bod$ID <- sel_grad_bod$cultureFac2.x
+
+
+spi_sel_brm <- brm((percAb + 0.0001) ~ scale(Spi_norm) + scale(Spi_pl) +
+                       treat_dev + treat_par + (1 | gr(ID, cov = relat_m)),
+                data = sel_grad_spi,
+                data2 = list(relat_m = relat_m),
+                family = Beta(link = "logit"),
+                chains = 4, cores = 2, iter = 40000)
+
+spi_sel_brm2 <- brm((percAb + 0.0001) ~ scale(Spi_norm) + scale(Spi_pl) +
+                       scale(Spi_norm):treat_dev + scale(Spi_pl):treat_dev +
+                       treat_dev + treat_par + (1 | gr(ID, cov = relat_m)),
+                data = sel_grad_spi,
+                data2 = list(relat_m = relat_m),
+                family = Beta(link = "logit"),
+                chains = 4, cores = 2, iter = 40000)
+
+spi_sel_brm3 <- brm((percAb + 0.0001) ~ scale(Spi_norm) + scale(Spi_pl) +
+                       scale(Spi_norm):treat_par + scale(Spi_pl):treat_par +
+                       treat_dev + treat_par + (1 | gr(ID, cov = relat_m)),
+                data = sel_grad_spi,
+                data2 = list(relat_m = relat_m),
+                family = Beta(link = "logit"),
+                chains = 4, cores = 2, iter = 40000)
+
+bod_sel_brm3 <- brm((percAb + 0.0001) ~ scale(Length.bod) + scale(Bod_pl) +
+                       scale(Length.bod):treat_par + scale(Bod_pl):treat_par +
+                       treat_dev + treat_par + (1 | gr(ID, cov = relat_m)),
+                data = sel_grad_bod,
+                data2 = list(relat_m = relat_m),
+                family = Beta(link = "logit"),
+                chains = 4, cores = 2, iter = 40000)
+
+posterior_summary(spi_sel_brm3)
+
+pp_check(spi_sel_brm3)
+
+posterior_summary(bod_sel_brm3)
+
+pp_check(bod_sel_brm3)
+
+# Plot raw biomin pl selection gradients
+sel_grad_spi$percNorm <- 1- sel_grad_spi$percAb
+sel_grad_bod$percNorm <- 1- sel_grad_bod$percAb
+
+sel_grad_spi_sum <- summarySE(measurevar = "Spi_pl",
+                              groupvars = c("treat_dev", 
+                                            "treat_par","ID"),
+                              data = sel_grad_spi)
+
+sel_grad_bod_sum <- summarySE(measurevar = "Bod_pl",
+                              groupvars = c("treat_dev", 
+                                            "treat_par","ID"),
+                              data = sel_grad_bod)
+
+
+sel_grad_spi_summed <- summarySE(measurevar = "percNorm",
+                              groupvars = c("treat_dev", 
+                                            "treat_par","ID"),
+                              data = sel_grad_spi)
+
+sel_grad_bod_summed <- summarySE(measurevar = "percNorm",
+                              groupvars = c("treat_dev", 
+                                            "treat_par","ID"),
+                              data = sel_grad_bod)
+
+sel_grad_spi_sum$ID_dev <- paste(sel_grad_spi_sum$ID, 
+                                 sel_grad_spi_sum$treat_dev,
+                                 sep = "_")
+
+sel_grad_bod_sum$ID_dev <- paste(sel_grad_bod_sum$ID, 
+                                 sel_grad_bod_sum$treat_dev,
+                                 sep = "_")
+
+sel_grad_spi_sum <- merge(data.frame(ID_dev = paste(sel_grad_spi_summed$ID, 
+                                 sel_grad_spi_summed$treat_dev,
+                                 sep = "_"),
+                                 percNorm = sel_grad_spi_summed$percNorm,
+                                 percNorm_sd = sel_grad_spi_summed$sd),
+                          sel_grad_spi_sum,
+                          by = c("ID_dev"))
+
+sel_grad_bod_sum <- merge(data.frame(ID_dev = paste(sel_grad_bod_summed$ID, 
+                                 sel_grad_bod_summed$treat_dev,
+                                 sep = "_"),
+                                 percNorm = sel_grad_bod_summed$percNorm,
+                                 percNorm_sd = sel_grad_bod_summed$sd),
+                          sel_grad_bod_sum,
+                          by = c("ID_dev"))
+
+ggplot(data = sel_grad_spi_sum,
+       aes(x = Spi_pl, y = percNorm, group = treat_dev, 
+           color = treat_dev, fill = treat_dev)) +
+  geom_errorbar(aes(ymin = percNorm - percNorm_sd, 
+                    ymax = percNorm + percNorm_sd), 
+                width = 0, size = 0.25, alpha = 0.5) +
+  geom_errorbar(data = sel_grad_spi_sum,
+                aes(xmin = Spi_pl - sd, xmax = Spi_pl + sd), 
+                width = 0, size = 0.25, alpha = 0.5) +
+  geom_point() +
+  geom_smooth(data = sel_grad_spi, method = "lm") +
+  facet_wrap(~treat_par) +
+  theme_classic(base_rect_size = 0) +
+  scale_color_manual(values = c("skyblue", "salmon2")) +
+  scale_fill_manual(values = c("skyblue", "salmon2"), guide = "none") +
+  labs(x = "Plasticity of biomineralization",
+       y = "% normal development",
+       color = "Dev. treatment")
+
+# Plot raw body size pl selection gradient
+ggplot(data = sel_grad_bod_sum,
+       aes(x = Bod_pl, y = percNorm, group = treat_dev, 
+           color = treat_dev, fill = treat_dev)) +
+  geom_errorbar(aes(ymin = percNorm - percNorm_sd, 
+                    ymax = percNorm + percNorm_sd), 
+                width = 0, size = 0.25, alpha = 0.5) +
+  geom_errorbar(data = sel_grad_bod_sum,
+                aes(xmin = Bod_pl - sd, xmax = Bod_pl + sd), 
+                width = 0, size = 0.25, alpha = 0.5) +
+  geom_point() +
+  geom_smooth(data = sel_grad_bod, method = "lm") +
+  facet_wrap(~treat_par) +
+  theme_classic(base_rect_size = 0) +
+  scale_color_manual(values = c("skyblue", "salmon2")) +
+  scale_fill_manual(values = c("skyblue", "salmon2"), guide = "none") +
+  labs(x = "Plasticity of body length",
+       y = "% normal development",
+       color = "Dev. treatment")
+
+
+```
+
 ```{r}
 
 # Filter df's for dev DEGs
@@ -531,13 +748,20 @@ tab_m_dev_filt <- merge(tab_m_dev_filt,
                          sign = ifelse(dev_QLFT_cutoff_df$logFC >1, 1, -1)),
                       by = "geneid")
 
+tab_morph_df <- merge(tab_morph_df,
+                      data.frame(geneid = row.names(dev_QLFT$table),
+                         sign = ifelse(dev_QLFT$table$logFC >1, 1, -1)),
+                      by = "geneid")
+
 # Scale CPM and transform it by units-toward-DE sign
 tab_dev_filt$scCPM <- scale(tab_dev_filt$CPM)
 tab_m_dev_filt$scCPM <- scale(tab_m_dev_filt$CPM)
+tab_morph_df$scCPM<- scale(tab_morph_df$CPM)
 
 tab_dev_filt$dirCPM <- tab_dev_filt$scCPM * tab_dev_filt$sign
-
 tab_m_dev_filt$dirCPM <- tab_m_dev_filt$scCPM * tab_m_dev_filt$sign
+tab_morph_df$dirCPM <- tab_morph_df$scCPM * tab_morph_df$sign
+
 
 # Fit structural equation model: 
 # (i) dev -> (1-abnorm), GE and (ii)  dev -> (1-abnorm)
@@ -836,10 +1060,10 @@ ggplot(data = ind_dfm,
 ```{r}
 
 # Fit abnorm SEM models - time = < 1 min
-lm5s <- dlply(na.omit(tab_m_dev_filt), c("geneid"), function(df) 
+lm5s <- dlply(na.omit(tab_morph_df), c("geneid"), function(df) 
 lm(dirCPM ~ Dev, data = df))
 
-lm6s <- dlply(na.omit(tab_m_dev_filt), c("geneid"), function(df) 
+lm6s <- dlply(na.omit(tab_morph_df), c("geneid"), function(df) 
 lm(Length_bod ~ Dev + dirCPM, data = df))
 
 ## If dev treat contains NA coefficient, remove from lm1 and lm2
@@ -885,13 +1109,13 @@ for (i in 1:length(lm5s)) {
 names(dev_bod_mediations) <- names(lm5s)
 
 # Save and reload mediation
-save(dev_bod_mediations, file = "dev_bod_mediations.Rdata")
+save(dev_bod_mediations, file = "dev_bod_mediations_all.Rdata")
 
 ```
 
 ```{r}
 
-load("dev_bod_mediations.Rdata")
+load("dev_bod_mediations_all.Rdata")
 
 # Filter for sig mediation: partition by + and - effects
 # Extract p-values for indirect effects: E -> M -> GE
@@ -959,9 +1183,9 @@ ind_dfb <- data.frame(geneid = ind_ci_db_df$column_label,
                      ci_97.5 = ind_ci_db_df$X2.5.)
 
 ind_dfb <- merge(ind_dfb,
-                data.frame(geneid = row.names(dev_QLFT_cutoff_df),
-                           logFC = dev_QLFT_cutoff_df$logFC,
-                           logCPM = dev_QLFT_cutoff_df$logCPM),
+                data.frame(geneid = row.names(dev_QLFT$table),
+                           logFC = dev_QLFT$table$logFC,
+                           logCPM = dev_QLFT$table$logCPM),
                 by = "geneid")
 
 ind_dfb$Dir <- ifelse(ind_dfb$fit_eff > 0, "Adaptive", "Maladaptive")
@@ -1028,7 +1252,7 @@ VarProp(lmer_test)[1,6]
 #  Next, estimat heritability of plasticity First, create df of plasticity per genotype - 1 min
 tab_QG_filt <- filter(tab_QG_df, geneid %in% row.names(dev_QLFT_cutoff_df))
 
-lme4qtls <- dlply(tab_QG_filt, c("geneid"), function(df) 
+lme4qtls <- dlply(tab_QG_df, c("geneid"), function(df) 
 relmatLmer(CPM_sc ~ Par + Dev + (1|ID) + (1|Dam) + (1|Sire),
                             data = df,
                             relmat = list(ID = relat_m)))
@@ -1078,9 +1302,9 @@ tab_pl_df <- merge(tab_QG_df,
                     by = "Sibship_geneid")
 
 tab_pl_filt <- filter(tab_pl_df, geneid %in% row.names(dev_QLFT_cutoff_df))
-tab_pl_filt <- tab_pl_filt %>% group_by(geneid) %>% mutate(Sib_FC_sc = scale(Sib_FC))
+tab_pl_df <- tab_pl_df %>% group_by(geneid) %>% mutate(Sib_FC_sc = scale(Sib_FC))
 
-pl_lme4s <- dlply(tab_pl_filt, c("geneid"), function(df) 
+pl_lme4s <- dlply(tab_pl_df, c("geneid"), function(df) 
 relmatLmer(Sib_FC_sc ~ Par + (1|ID) + (1|Dam) + (1|Sire),
                             data = df,
                             relmat = list(ID = relat_m)))
@@ -1385,8 +1609,22 @@ remove_1st_semi <- function(text_vector) {
   return(modified_text_vector)
 }
 
+remove_last_semi <- function(text_vector) {
+  modified_text_vector <- vector(length = length(text_vector))
+  
+  for (i in 1:length(text_vector)) {
+    if (substr(text_vector[i], nchar(text_vector[i]), nchar(text_vector[i])) == ";") {
+      modified_text_vector[i] <- substr(text_vector[i], 1, nchar(text_vector[i]) - 1)
+    } else {
+      modified_text_vector[i] <- text_vector[i]
+    }
+  }
+  
+  return(modified_text_vector)
+}
+
 # Apply function to remove first semicolons from GO term list
-goAnnot_spur5.0$GO <- remove_1st_semi(goAnnot_spur5.0$GO)
+goAnnot_spur5.0$GO <- gsub(" ", "", remove_last_semi(remove_1st_semi(goAnnot_spur5.0$GO)))
 
 # Export to GOMWU directory
 write.table(goAnnot_spur5.0, 
@@ -1402,10 +1640,130 @@ Next, perform analyses
 
 ```{r}
 
+# Create DE -log pvalue + logFC GOMWU inputs
+write.csv(
+  data.frame(geneid = row.names(dev_QLFT$table),
+             neg_log_p = -log(dev_QLFT$table$PValue)),
+  row.names = FALSE,
+  "GO_MWU-master/dev_logFC.csv")
 
+write.csv(
+  data.frame(geneid = row.names(dev_QLFT$table),
+             logFC = (dev_QLFT$table$logFC)),
+  row.names = FALSE,
+  "GO_MWU-master/dev_logFC.csv")
+
+# Create fitness effect for GOMWU
+write.csv(
+  data.frame(geneid = ind_dfb$geneid,
+             eff = ind_dfb$fit_eff),
+  row.names = FALSE,
+  "GO_MWU-master/bod_GOMWU_eff.csv")
+
+write.csv(
+  data.frame(geneid = plh2_v_bod$geneid,
+             eff_IA = plh2_v_bod$fit_eff * plh2_v_bod$`unlist(bind_rows(evol_pl, .id = "column_label"))`),
+  row.names = FALSE,
+  "GO_MWU-master/bod_IA_GOMWU_eff.csv")
 
 ```
 
+
+```{r}
+
+# GO enrichments using Mann Whitney U tests
+setwd("~/Documents/GitHub/Cross_pHox/GO_MWU-master/")
+
+#Now we multiply them together into a new column
+
+## Ok we also want to bring in our annotations
+#I would suggest putting a GO_MWU folder into your working directory for these steps. There is some stuff to download such as the obo files 
+#See https://github.com/z0on/GO_MWU
+
+# GO_MWU uses continuous measure of significance (such as fold-change or -log(p-value) ) to identify GO categories that are significantly enriches with either up- or down-regulated genes. The advantage - no need to impose arbitrary significance cutoff.
+# If the measure is binary (0 or 1) the script will perform a typical "GO enrichment" analysis based Fisher's exact test: it will show GO categories over-represented among the genes that have 1 as their measure. 
+# On the plot, different fonts are used to indicate significance and color indicates enrichment with either up (red) or down (blue) regulated genes. No colors are shown for binary measure analysis.
+# The tree on the plot is hierarchical clustering of GO categories based on shared genes. Categories with no branch length between them are subsets of each other.
+# The fraction next to GO category name indicates the fracton of "good" genes in it; "good" genes being the ones exceeding the arbitrary absValue cutoff (option in gomwuPlot). For Fisher's based test, specify absValue=0.5. This value does not affect statistics and is used for plotting only.
+# Stretch the plot manually to match tree to text
+
+# Mikhail V. Matz, UT Austin, February 2015; matz@utexas.edu
+
+################################################################
+# First, press command-D on mac or ctrl-shift-H in Rstudio and navigate to the directory containing scripts and input files. Then edit, mark and execute the following bits of code, one after another.
+
+# Edit these to match your data file names: 
+input="bod_GOMWU_eff.csv" # two columns of comma-separated values: gene id, continuous measure of significance. To perform standard GO enrichment analysis based on Fisher's exact test, use binary measure (0 or 1, i.e., either sgnificant or not).
+goAnnotations="goAnnot_spur5.0.tab" # two-column, tab-delimited, one line per gene, multiple GO terms separated by semicolon. If you have multiple lines per gene, use nrify_GOtable.pl prior to running this script.
+goDatabase="go.obo" # download from http://www.geneontology.org/GO.downloads.ontology.shtml
+goDivision="MF" # either MF, or BP, or CC
+source("gomwu.functions.R")
+
+# Calculating stats. It might take ~3 min for MF and BP. Do not rerun it if you just want to replot the data with different cutoffs, go straight to gomwuPlot. If you change any of the numeric values below, delete the files that were generated in previos runs first.
+gomwuStats(input, goDatabase, goAnnotations, goDivision,
+	perlPath="perl", # replace with full path to perl executable if it is not in your system's PATH already
+	largest=0.1, # a GO category will not be considered if it contains more than this fraction of the total number of genes
+	smallest=25,   # a GO category should contain at least this many genes to be considered
+	clusterCutHeight=0.25) # # threshold for merging similar (gene-sharing) terms. See README for details.
+           #	Alternative="g" # by default the MWU test is two-tailed; specify "g" or "l" of you want to test for "greater" or "less" instead. 
+           #	Module=TRUE,Alternative="g" # un-remark this if you are analyzing a SIGNED WGCNA module (values: 0 for not in module genes, kME for in-module genes). In the call to gomwuPlot below, specify absValue=0.001 (count number of "good genes" that fall into the module)
+           #	Module=TRUE # un-remark this if you are analyzing an UNSIGNED WGCNA module
+# do not continue if the printout shows that no GO terms pass 10% FDR.
+
+quartz.save(file = "quartz.png", type = "png")
+results=gomwuPlot(input, goAnnotations, goDivision,
+#	absValue=-log(0.05,10),  # genes with the measure value exceeding this will be counted as "good genes". Specify absValue=0.001 if you are doing Fisher's exact test for standard GO enrichment or analyzing a WGCNA module (all non-zero genes = "good genes").
+	absValue=.5,
+	level1=0.05, # FDR threshold for plotting. Specify level1=1 to plot all GO categories containing genes exceeding the absValue.
+	level2=0.001, # FDR cutoff to print in regular (not italic) font.
+	level3=0.0001, # FDR cutoff to print in large bold font.
+	txtsize=.75,    # decrease to fit more on one page, or increase (after rescaling the plot so the tree fits the text) for better "word cloud" effect
+	treeHeight=0.5, # height of the hierarchical clustering tree
+	colors=c("dodgerblue2","firebrick1","skyblue","lightcoral") # these are default colors, un-remar and change if needed
+)
+# manually rescale the plot so the tree matches the text 
+# if there are too many categories displayed, try make it more stringent with level1=0.05,level2=0.01,level3=0.001.  
+
+# text representation of results, with actual adjusted p-values
+results
+
+# Export list of GO terms enriched among genes in lowest quartiles of TSS acess and expression
+write.csv(results[1], 
+          "Dev_GOMWU_results.csv", 
+          row.names = TRUE)
+
+
+# Search for p53 TF in dev DEG's
+peek <- dev_QLFT$table
+peek$geneid <- row.names(peek)
+
+# Find geneids of ribotoxicity response transcripts
+goAnnot <- read.table("GO_MWU-master/goAnnot_spur5.0.tab")
+dev_QLFT_cutoff_df$geneid <- row.names(dev_QLFT_cutoff)
+
+colnames(goAnnot) <- c("geneid", "GO_terms")
+
+dev_QLFT_cutoff_df <- merge(dev_QLFT_cutoff_df,
+                         goAnnot,
+                         by = "geneid")
+
+## Maladaptive ribosomal GO terms
+# RNA dependent ATPase = 
+# LOC581723/UPF1 (responsive to oxidative stress)
+
+```
+
+```{r}
+
+# Try functional enrichment with topGO
+library(topGO)
+bg_genes <- row.names(dev_QLFT$table)
+ 
+# Read in genes of interest
+candidate_list <- row.names(dev_QLFT_cutoff$table)
+
+
+```
 
 #Boneyard
 
